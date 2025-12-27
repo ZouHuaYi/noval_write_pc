@@ -1,0 +1,46 @@
+{
+  "version": "1.0",
+  "description": "用户自定义一致性规则 - 根据你的小说设定添加规则",
+  "rules": [
+    {
+      "id": "example_cultivation_limit",
+      "type": "power_level",
+      "name": "修炼境界限制（示例）",
+      "description": "金丹期之前不可操控雷元素",
+      "enabled": false,
+      "severity": "high",
+      "condition": {
+        "character_level_below": "金丹",
+        "text_contains": ["操控雷", "雷光", "雷霆", "掌控雷电"]
+      },
+      "error_message": "当前境界无法操控雷元素",
+      "suggestion": "改为'引导雷种力量'或'感应雷元素'，避免直接操控"
+    },
+    {
+      "id": "example_forbidden_action",
+      "type": "world_rule",
+      "name": "世界规则限制（示例）",
+      "description": "此世界无时间魔法",
+      "enabled": false,
+      "severity": "critical",
+      "condition": {
+        "text_contains": ["时间魔法", "时间倒流", "时光回溯", "暂停时间"]
+      },
+      "error_message": "此世界不存在时间魔法",
+      "suggestion": "根据世界观设定，时间魔法不存在，请使用其他方式"
+    }
+  ],
+  "notes": [
+    "💡 使用说明：",
+    "1. 将 enabled 设为 true 以启用规则",
+    "2. type 可选值：world_rule, power_level, character, timeline, pov, logic, format",
+    "3. severity 可选值：low, medium, high, critical",
+    "4. condition 支持的字段：",
+    "   - text_contains: 检查文本是否包含指定关键词",
+    "   - character_level_below: 检查角色境界是否低于指定等级",
+    "   - detect_pov_switch: 检测视角切换",
+    "   - check_personality_match: 检查性格一致性",
+    "   - 更多条件正在开发中..."
+  ]
+}
+

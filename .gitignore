@@ -1,0 +1,12 @@
+node_modules
+release
+docs
+.DS_Store
+dist
+dist-ssr
+*.local
+/dist*
+*-lock.*
+pnpm-debug
+stats.html
+.idea

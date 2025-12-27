@@ -1,0 +1,85 @@
+{
+  "version": "1.0",
+  "description": "Novel Agent 默认一致性规则",
+  "rules": [
+    {
+      "id": "pov_consistency",
+      "type": "pov",
+      "name": "视角一致性",
+      "description": "同一段落内不可切换人称视角",
+      "enabled": true,
+      "severity": "medium",
+      "condition": {
+        "detect_pov_switch": true
+      },
+      "error_message": "段落内视角发生切换（第一人称 ↔ 第三人称）",
+      "suggestion": "保持段落内视角统一，如需切换视角请另起段落"
+    },
+    {
+      "id": "no_instant_heal",
+      "type": "logic",
+      "name": "伤势恢复逻辑",
+      "description": "重伤不可瞬间恢复",
+      "enabled": true,
+      "severity": "high",
+      "condition": {
+        "text_contains": ["瞬间痊愈", "立刻恢复如初", "伤势全无", "完好如初"]
+      },
+      "error_message": "伤势恢复不合理，重伤无法瞬间痊愈",
+      "suggestion": "添加恢复过程描写，或说明特殊原因（如：灵丹妙药、特殊能力）"
+    },
+    {
+      "id": "timeline_consistency",
+      "type": "timeline",
+      "name": "时间线一致性",
+      "description": "时间线不可混乱或倒退",
+      "enabled": true,
+      "severity": "high",
+      "condition": {
+        "check_timeline_logic": true
+      },
+      "error_message": "时间线出现混乱或矛盾",
+      "suggestion": "检查时间顺序，确保前后逻辑一致"
+    },
+    {
+      "id": "character_personality",
+      "type": "character",
+      "name": "人物性格一致性",
+      "description": "人物言行应符合其性格设定",
+      "enabled": true,
+      "severity": "medium",
+      "condition": {
+        "check_personality_match": true
+      },
+      "error_message": "人物表现与性格设定不符",
+      "suggestion": "参考人物设定，调整对话或行为描写"
+    },
+    {
+      "id": "no_contradiction",
+      "type": "logic",
+      "name": "逻辑自洽性",
+      "description": "前后文不可出现明显矛盾",
+      "enabled": true,
+      "severity": "high",
+      "condition": {
+        "detect_contradiction": true
+      },
+      "error_message": "发现前后文矛盾",
+      "suggestion": "检查并修正矛盾之处，保持逻辑一致"
+    },
+    {
+      "id": "dialogue_punctuation",
+      "type": "format",
+      "name": "对话标点规范",
+      "description": "对话应使用正确的标点符号",
+      "enabled": true,
+      "severity": "low",
+      "condition": {
+        "check_dialogue_format": true
+      },
+      "error_message": "对话标点使用不规范",
+      "suggestion": "对话使用双引号或单引号，句末标点应在引号内"
+    }
+  ]
+}
+
