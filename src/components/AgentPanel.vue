@@ -48,12 +48,6 @@
           <p class="text-slate-500">• "增强第8章开头的场景描写，增加环境氛围感"</p>
           <p class="text-slate-500">• "在第001-002章.txt文件中续写第1章、第2章的内容"</p>
         </div>
-        <div class="space-y-1.5 pl-7 pt-2 border-t border-slate-800/50">
-          <p class="text-slate-300">🚀 <strong>DeepSeek 使用提示：</strong></p>
-          <p class="text-slate-500">• 需求描述要具体明确，避免过于宽泛</p>
-          <p class="text-slate-500">• 确保相关的章节和设定文件已存在于工作区</p>
-          <p class="text-slate-500">• 建议针对单个章节提出修改需求，分步执行</p>
-        </div>
       </div>
 
       <!-- 消息列表 -->
@@ -148,7 +142,6 @@
         placeholder="描述你想要做的修改，例如：修正人物性格、增加情节伏笔、优化对话描写等..."
         @keydown.ctrl.enter="handleSend"
       ></textarea>
-
       <div class="flex items-center justify-between">
         <div class="text-[10px] text-slate-500">
           💡 提示：描述要具体明确

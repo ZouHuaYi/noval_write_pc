@@ -5,11 +5,15 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const { app } = require('electron');
 
 class RuleEngine {
   constructor(workspaceRoot) {
     this.workspaceRoot = workspaceRoot;
-    this.defaultRulesPath = path.join(__dirname, '../../rules/default-rules.json');
+    
+    // 使用 app.getAppPath() 获取应用路径，兼容开发环境和打包环境
+    const appPath = app.getAppPath();
+    this.defaultRulesPath = path.join(appPath, 'rules/default-rules.json');
     this.customRulesPath = path.join(workspaceRoot, 'rules/consistency-rules.json');
     this.rules = [];
     this.loaded = false;
@@ -21,10 +25,19 @@ class RuleEngine {
   async loadRules() {
     try {
       console.log('📋 加载一致性规则...');
+      console.log(`📂 默认规则路径: ${this.defaultRulesPath}`);
 
       // 加载默认规则
-      const defaultRulesContent = await fs.readFile(this.defaultRulesPath, 'utf-8');
-      const defaultRules = JSON.parse(defaultRulesContent);
+      let defaultRules = { rules: [] };
+      try {
+        const defaultRulesContent = await fs.readFile(this.defaultRulesPath, 'utf-8');
+        defaultRules = JSON.parse(defaultRulesContent);
+        console.log(`✅ 已加载默认规则: ${defaultRules.rules?.length || 0} 条`);
+      } catch (error) {
+        console.error(`❌ 加载默认规则失败 (${this.defaultRulesPath}):`, error.message);
+        // 如果默认规则加载失败，继续使用空规则，不中断流程
+        console.warn('⚠️ 将使用空规则列表，请检查规则文件是否存在');
+      }
       
       let customRules = { rules: [] };
       
@@ -32,14 +45,15 @@ class RuleEngine {
       try {
         const customRulesContent = await fs.readFile(this.customRulesPath, 'utf-8');
         customRules = JSON.parse(customRulesContent);
+        console.log(`✅ 已加载自定义规则: ${customRules.rules?.length || 0} 条`);
       } catch (e) {
         console.log('📝 未找到自定义规则，使用默认规则');
       }
 
       // 合并规则（自定义规则优先级更高）
       this.rules = [
-        ...defaultRules.rules.filter(r => r.enabled !== false),
-        ...customRules.rules.filter(r => r.enabled === true)
+        ...(defaultRules.rules || []).filter(r => r.enabled !== false),
+        ...(customRules.rules || []).filter(r => r.enabled === true)
       ];
 
       this.loaded = true;
@@ -49,7 +63,10 @@ class RuleEngine {
 
     } catch (error) {
       console.error('❌ 加载规则失败:', error);
-      return { success: false, error: error.message };
+      // 即使加载失败，也返回成功，但规则列表为空
+      this.rules = [];
+      this.loaded = true;
+      return { success: false, error: error.message, count: 0 };
     }
   }
 

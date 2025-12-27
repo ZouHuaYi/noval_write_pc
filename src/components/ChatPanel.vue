@@ -1,5 +1,5 @@
 <template>
-  <div class="h-full bg-slate-950/70 flex flex-col flex-shrink-0">
+  <div class="h-full bg-slate-950/70 flex flex-col">
     <!-- 顶部工具栏 -->
     <div class="border-b border-slate-800 p-2 space-y-2">
       <!-- 提示文件状态 -->
@@ -189,7 +189,7 @@
         </div>
 
         <button
-          class="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
+          class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-xs text-white disabled:opacity-50 disabled:cursor-not-allowed"
           :disabled="!modelValue || isLoading || models.length === 0"
           @click="handleSend"
         >

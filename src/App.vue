@@ -173,21 +173,21 @@
           </button>
           <button
             class="flex-1 px-2 py-2 text-[11px] font-medium transition-colors whitespace-nowrap"
-            :class="rightPanelMode === 'log' 
-              ? 'text-emerald-400 border-b-2 border-emerald-600 bg-slate-900/50' 
-              : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30'"
-            @click="rightPanelMode = 'log'"
-          >
-            📋 日志
-          </button>
-          <button
-            class="flex-1 px-2 py-2 text-[11px] font-medium transition-colors whitespace-nowrap"
             :class="rightPanelMode === 'rules' 
               ? 'text-emerald-400 border-b-2 border-emerald-600 bg-slate-900/50' 
               : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30'"
             @click="rightPanelMode = 'rules'"
           >
             ⚙️ 规则
+          </button>
+          <button
+            class="flex-1 px-2 py-2 text-[11px] font-medium transition-colors whitespace-nowrap"
+            :class="rightPanelMode === 'log' 
+              ? 'text-emerald-400 border-b-2 border-emerald-600 bg-slate-900/50' 
+              : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30'"
+            @click="rightPanelMode = 'log'"
+          >
+            📋 日志
           </button>
         </div>
 
