@@ -194,7 +194,7 @@ async function searchSimilarChunks(queryEmbedding, topK = 5) {
         filePath: file_path,
         chunkIndex: chunk_index,
         text: chunk_text,
-        similarity: similarity.toFixed(4)
+        similarity: similarity ? similarity.toFixed(4) : 0
       }));
   } catch (err) {
     console.error('搜索相似文本块失败:', err);

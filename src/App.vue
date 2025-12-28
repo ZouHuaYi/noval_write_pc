@@ -972,7 +972,7 @@ const confirmApplyAllChanges = async () => {
                   
                   // 等待文件可读（最多重试 3 次，每次等待 500ms）
                   let retryCount = 0;
-                  let analyzeResult = null;
+                  let analyzeResult:any = null;
                   
                   while (retryCount < 3 && !analyzeResult?.success) {
                     if (retryCount > 0) {
