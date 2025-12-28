@@ -90,6 +90,14 @@
       <p v-else class="text-xs text-slate-500 mt-2">请先打开工作区</p>
     </div>
 
+    <!-- 更新状态提示 -->
+    <div v-if="memory.isUpdating.value" class="p-4 border-b border-slate-700 bg-blue-500/10">
+      <div class="flex items-center gap-2 text-sm text-blue-400">
+        <div class="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+        <span>正在更新记忆系统...</span>
+      </div>
+    </div>
+
     <!-- 记忆摘要 -->
     <div v-if="memory.hasMemory.value" class="flex-1 flex flex-col overflow-hidden">
       <!-- 总览卡片 -->
@@ -141,7 +149,8 @@
           v-for="tab in tabs"
           :key="tab.id"
           @click="activeTab = tab.id"
-          :class="['px-4 py-2 text-sm text-slate-400 hover:text-slate-200 transition-colors relative', { 'text-emerald-400': activeTab === tab.id }]"
+          :disabled="memory.isUpdating.value"
+          :class="['px-4 py-2 text-sm text-slate-400 hover:text-slate-200 transition-colors relative', { 'text-emerald-400': activeTab === tab.id }, memory.isUpdating.value && 'opacity-50 cursor-not-allowed']"
         >
           {{ tab.icon }} {{ tab.label }}
           <span v-if="activeTab === tab.id" class="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500"></span>

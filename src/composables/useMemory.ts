@@ -78,6 +78,7 @@ export function useMemory() {
   const characters = ref<Character[]>([]);
   const foreshadows = ref<Foreshadow[]>([]);
   const isLoading = ref(false);
+  const isUpdating = ref(false); // 是否正在更新记忆
   const error = ref<string>('');
   const initialized = ref(false);
 
@@ -463,6 +464,7 @@ export function useMemory() {
     characters,
     foreshadows,
     isLoading,
+    isUpdating,
     error,
     initialized,
 

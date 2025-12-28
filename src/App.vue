@@ -184,10 +184,10 @@
               rightPanelMode === 'memory' 
                 ? 'text-emerald-400 border-b-2 border-emerald-600 bg-slate-900/50' 
                 : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30',
-              (!novelAgent.initialized.value || novelAgent.isInitializing.value) && 'opacity-50 cursor-not-allowed'
+              (!novelAgent.initialized.value || novelAgent.isInitializing.value || memory.isUpdating.value) && 'opacity-50 cursor-not-allowed'
             ]"
-            :disabled="!novelAgent.initialized.value || novelAgent.isInitializing.value"
-            :title="(!novelAgent.initialized.value || novelAgent.isInitializing.value) ? 'Agent 未初始化完成，请稍候...' : '记忆系统'"
+            :disabled="!novelAgent.initialized.value || novelAgent.isInitializing.value || memory.isUpdating.value"
+            :title="memory.isUpdating.value ? '记忆系统正在更新中，请稍候...' : (!novelAgent.initialized.value || novelAgent.isInitializing.value) ? 'Agent 未初始化完成，请稍候...' : '记忆系统'"
             @click="rightPanelMode = 'memory'"
           >
             📚 记忆
@@ -966,22 +966,42 @@ const confirmApplyAllChanges = async () => {
           
           // 2.2 更新记忆系统（基于生成的文本）
           console.log('💾 开始更新记忆系统...');
-          const updateResult = await window.api?.memory?.updateFromText?.(
-            execResult.text,
-            execResult.userRequest,
-            execResult.intent
-          );
           
-          if (updateResult?.success) {
-            if (updateResult.updated) {
-              console.log('✅ 记忆系统已更新');
-              showAlert('记忆系统已更新', '成功', 'info');
+          // 设置更新状态
+          memory.isUpdating.value = true;
+          
+          try {
+            // 确保传递的数据是可序列化的（避免克隆错误）
+            const textToUpdate = typeof execResult.text === 'string' ? execResult.text : String(execResult.text || '');
+            const userRequestToUpdate = typeof execResult.userRequest === 'string' ? execResult.userRequest : String(execResult.userRequest || '');
+            const intentToUpdate = typeof execResult.intent === 'string' 
+              ? execResult.intent 
+              : (execResult.intent ? JSON.stringify(execResult.intent) : '');
+            
+            const updateResult = await window.api?.memory?.updateFromText?.(
+              textToUpdate,
+              userRequestToUpdate,
+              intentToUpdate
+            );
+            
+            if (updateResult?.success) {
+              if (updateResult.updated) {
+                console.log('✅ 记忆系统已更新');
+                showAlert('记忆系统已更新', '成功', 'info');
+                // 刷新记忆数据
+                await memory.getSummary();
+                await memory.getAllCharacters();
+                await memory.getPendingForeshadows();
+              } else {
+                console.log('ℹ️ 无需更新记忆');
+              }
             } else {
-              console.log('ℹ️ 无需更新记忆');
+              console.warn('⚠️ 更新记忆系统失败:', updateResult?.error);
+              showAlert(`记忆系统更新失败: ${updateResult?.error}`, '警告', 'warning');
             }
-          } else {
-            console.warn('⚠️ 更新记忆系统失败:', updateResult?.error);
-            showAlert(`记忆系统更新失败: ${updateResult?.error}`, '警告', 'warning');
+          } finally {
+            // 无论成功失败，都要重置更新状态
+            memory.isUpdating.value = false;
           }
         } catch (err) {
           console.warn('⚠️ 更新流程失败:', err);
