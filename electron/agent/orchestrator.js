@@ -299,7 +299,7 @@ class AgentOrchestrator {
 
       this.log('Curve analysis completed', {
         pacing: pacingAnalysis.overall,
-        emotion: emotionAnalysis.end.toFixed(2),
+        emotion: emotionAnalysis?.end ? emotionAnalysis.end.toFixed(2) : 'N/A',
         density: densityAnalysis.overall
       });
 
@@ -378,20 +378,12 @@ class AgentOrchestrator {
         }
       }
 
-      // 状态 5: 更新记忆（只有通过校验才能进入）
-      // 模型永远不能直接进入 UPDATE_MEMORY，必须通过状态机校验
-      const finalHasFatal = this.dslRuleEngine.hasFatalError(checkResult.errors || []);
-      const finalHasError = this.dslRuleEngine.hasError(checkResult.errors || []);
-      
-      if (checkResult.status === 'pass' && !finalHasFatal && !finalHasError) {
-        this.setState(AgentStates.UPDATE_MEMORY);
-        await this.updateMemory(finalText, request, context, llmCaller);
-        this.log('Memory updated');
-      } else {
-        this.log('Memory update skipped', { 
-          reason: finalHasFatal ? 'fatal_error' : finalHasError ? 'error' : 'check_failed'
-        });
-      }
+      // 状态 5: 更新记忆（已移除自动更新）
+      // 现在记忆更新将在用户应用变更后执行，而不是在执行完成后自动执行
+      // 这样可以确保只有用户确认应用变更后，才更新记忆系统
+      this.log('Memory update deferred', { 
+        note: '记忆更新将在用户应用变更后执行'
+      });
 
       // 状态 6: 完成
       const executionTime = Date.now() - startTime;
@@ -721,9 +713,10 @@ class AgentOrchestrator {
 5. **情节连贯**：基于当前剧情状态，合理推进情节
 
 # 输出要求
+- 必须有章节标题
 - 直接输出小说文本，不要添加任何解释、说明或标记
 - 文本应该完整、连贯，符合小说写作规范
-- 长度根据需求确定，通常 500-2000 字
+- 长度根据需求确定，通常 1000-3000 字
 - 保持段落结构，使用适当的换行`;
 
     // 构建用户提示词

@@ -816,18 +816,7 @@ const handleApplyChange = async (change: FileChange) => {
     agent.showDiffPreview.value = false;
     await handleRefresh();
     showAlert('变更已应用', '成功', 'info');
-    // 应用变更后，更新记忆系统
-    if (fs.workspaceRoot.value && memory.initialized.value) {
-      // 触发记忆系统更新（增量提取）
-      try {
-        await window.api?.memory?.extract?.({
-          chapterBatchSize: 5,
-          maxChapters: 0
-        });
-      } catch (err) {
-        console.warn('更新记忆系统失败:', err);
-      }
-    }
+    // 注意：单个变更应用时不更新记忆，只有应用全部变更时才更新
   }
 };
 
@@ -861,7 +850,8 @@ const confirmApplyAllChanges = async () => {
   }
   
   try {
-    // 先显示所有变更的预览
+    // 步骤 1: 应用所有文件变更
+    showAlert('正在应用变更...', '处理中', 'info');
     for (const change of pendingChanges) {
       await agent.applyFileChange(change);
     }
@@ -869,16 +859,77 @@ const confirmApplyAllChanges = async () => {
     showAlert(`已应用 ${pendingChanges.length} 个变更`, '成功', 'info');
     await handleRefresh();
     
-    // 应用变更后，更新记忆系统
-    if (fs.workspaceRoot.value && memory.initialized.value) {
-      try {
-        await window.api?.memory?.extract?.({
-          chapterBatchSize: 5,
-          maxChapters: 0
-        });
-        console.log('✅ 记忆系统已更新');
-      } catch (err) {
-        console.warn('⚠️ 更新记忆系统失败:', err);
+    // 步骤 2: 应用变更成功后，执行后续更新流程
+    if (fs.workspaceRoot.value && memory.initialized.value && agent.currentTask.value?.executionResult) {
+      const execResult = agent.currentTask.value.executionResult;
+      
+      if (execResult.text && execResult.userRequest) {
+        try {
+          // 2.1 章节分析（如果有章节文件）
+          const appliedFiles = pendingChanges
+            .filter(c => c.status === 'applied')
+            .map(c => {
+              // 构建完整文件路径
+              const fullPath = c.filePath.startsWith(fs.workspaceRoot.value)
+                ? c.filePath
+                : `${fs.workspaceRoot.value}/${c.filePath}`;
+              return { filePath: fullPath, fileName: c.fileName };
+            });
+          
+          if (appliedFiles.length > 0) {
+            console.log('📊 开始分析已应用的章节...');
+            try {
+              // 分析每个章节文件
+              for (const file of appliedFiles) {
+                // 尝试从文件名提取章节号
+                const chapterMatch = file.fileName.match(/第(\d+)/);
+                if (chapterMatch) {
+                  const chapterNum = parseInt(chapterMatch[1]);
+                  console.log(`📊 分析章节文件: 第${chapterNum}章 - ${file.fileName}`);
+                  
+                  // 触发章节分析
+                  const analyzeResult = await window.api?.memory?.analyzeChapter?.(
+                    file.filePath,
+                    chapterNum
+                  );
+                  
+                  if (analyzeResult?.success) {
+                    console.log(`✅ 章节分析完成: 第${chapterNum}章`);
+                  } else {
+                    console.warn(`⚠️ 章节分析失败: 第${chapterNum}章 - ${analyzeResult?.error}`);
+                  }
+                } else {
+                  console.log(`ℹ️ 跳过非章节文件: ${file.fileName}`);
+                }
+              }
+            } catch (err) {
+              console.warn('⚠️ 章节分析失败:', err);
+            }
+          }
+          
+          // 2.2 更新记忆系统（基于生成的文本）
+          console.log('💾 开始更新记忆系统...');
+          const updateResult = await window.api?.memory?.updateFromText?.(
+            execResult.text,
+            execResult.userRequest,
+            execResult.intent
+          );
+          
+          if (updateResult?.success) {
+            if (updateResult.updated) {
+              console.log('✅ 记忆系统已更新');
+              showAlert('记忆系统已更新', '成功', 'info');
+            } else {
+              console.log('ℹ️ 无需更新记忆');
+            }
+          } else {
+            console.warn('⚠️ 更新记忆系统失败:', updateResult?.error);
+            showAlert(`记忆系统更新失败: ${updateResult?.error}`, '警告', 'warning');
+          }
+        } catch (err) {
+          console.warn('⚠️ 更新流程失败:', err);
+          showAlert(`更新流程失败: ${err.message}`, '警告', 'warning');
+        }
       }
     }
   } catch (error: any) {

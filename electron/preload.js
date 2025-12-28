@@ -125,6 +125,8 @@ contextBridge.exposeInMainWorld('api', {
     import: async (data) => await ipcRenderer.invoke('memory:import', data),
     reset: async () => await ipcRenderer.invoke('memory:reset'),
     extract: async (options) => await ipcRenderer.invoke('memory:extract', options),
+    updateFromText: async (text, userRequest, intent) => await ipcRenderer.invoke('memory:updateFromText', { text, userRequest, intent }),
+    analyzeChapter: async (filePath, chapterNumber) => await ipcRenderer.invoke('memory:analyzeChapter', { filePath, chapterNumber }),
     onExtractProgress: (callback) => {
       ipcRenderer.on('memory:extract:progress', (event, progress) => callback(progress));
       return () => ipcRenderer.removeAllListeners('memory:extract:progress');

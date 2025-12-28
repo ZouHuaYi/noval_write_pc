@@ -179,30 +179,70 @@ class MemoryUpdater {
   async update(text, request, context, llmCaller) {
     try {
       console.log('💾 开始更新记忆...');
+      console.log('📊 步骤 1/3: 提取章节号...');
 
       // 提取章节号
       const chapterNum = this.extractChapterNumber(request.userRequest || '');
+      if (chapterNum) {
+        console.log(`   章节号: 第${chapterNum}章`);
+      } else {
+        console.log('   章节号: 未识别');
+      }
 
       // 使用 LLM 提取事实
+      console.log('📊 步骤 2/3: 使用 LLM 提取事实...');
       const facts = await this.extractFacts(text, chapterNum, context, llmCaller);
 
       if (!facts.has_updates) {
-        console.log('ℹ️ 无需更新记忆');
+        console.log('ℹ️ 无需更新记忆（未检测到更新内容）');
         return { success: true, updated: false };
       }
+
+      // 统计提取到的信息
+      const characterCount = facts.character_updates ? Object.keys(facts.character_updates).length : 0;
+      const historyCount = facts.character_history ? Object.keys(facts.character_history).length : 0;
+      const plotEventsCount = facts.plot_updates?.completed_events?.length || 0;
+      const foreshadowsCount = facts.new_foreshadows?.length || 0;
+      
+      console.log(`   提取到:`);
+      console.log(`   - 角色更新: ${characterCount} 个`);
+      console.log(`   - 角色历史: ${historyCount} 个`);
+      console.log(`   - 剧情事件: ${plotEventsCount} 个`);
+      console.log(`   - 新伏笔: ${foreshadowsCount} 个`);
 
       // 添加章节号到 facts（用于状态迁移历史）
       facts.chapter = chapterNum;
 
       // 应用更新
+      console.log('📊 步骤 3/3: 应用更新到记忆系统...');
       const result = await this.memory.updateFromText(facts);
 
-      console.log('✅ 记忆更新完成');
+      // 输出更新结果
+      const updatedModules = [];
+      if (result.updated?.world) updatedModules.push('世界观');
+      if (result.updated?.character) updatedModules.push('角色');
+      if (result.updated?.plot) updatedModules.push('剧情');
+      if (result.updated?.foreshadow) updatedModules.push('伏笔');
+      
+      console.log(`✅ 记忆更新完成:`);
+      console.log(`   已更新模块: ${updatedModules.length > 0 ? updatedModules.join('、') : '无'}`);
+      // 只返回可序列化的数据，避免 IPC 克隆错误
       return {
         success: true,
         updated: true,
-        result,
-        facts
+        result: {
+          world: result.world || false,
+          character: result.character || false,
+          plot: result.plot || false,
+          foreshadow: result.foreshadow || false
+        },
+        // 不返回完整的 facts 对象，只返回摘要
+        factsSummary: {
+          has_updates: facts.has_updates,
+          character_count: facts.character_updates ? Object.keys(facts.character_updates).length : 0,
+          plot_events_count: facts.plot_updates?.completed_events?.length || 0,
+          foreshadows_count: facts.new_foreshadows?.length || 0
+        }
       };
 
     } catch (error) {

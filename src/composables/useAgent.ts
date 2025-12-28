@@ -32,6 +32,12 @@ export interface AgentTask {
   status: 'analyzing' | 'planning' | 'executing' | 'completed' | 'failed';
   changes: FileChange[];
   error?: string;
+  // 保存执行结果，用于应用变更后更新记忆
+  executionResult?: {
+    text: string;
+    intent?: any;
+    userRequest: string;
+  };
 }
 
 export function useAgent(
@@ -203,6 +209,13 @@ export function useAgent(
 
       task.changes = changes;
       task.status = 'completed';
+      
+      // 保存执行结果，用于应用变更后更新记忆
+      task.executionResult = {
+        text: result.text || '',
+        intent: result.intent,
+        userRequest: userRequest
+      };
 
       // 添加成功消息（不自动应用变更，需要用户确认）
       const successMsg: AgentMessage = {
@@ -217,7 +230,7 @@ export function useAgent(
           (result.checkResult?.status === 'pass' 
             ? '✅ 文本已通过一致性校验，符合世界观和人物设定。\n\n'
             : '⚠️ 文本未通过一致性校验，请检查。\n\n') +
-          `📝 提示：请点击"应用全部变更"按钮查看预览并确认应用变更。`,
+          `📝 提示：请点击"应用全部变更"按钮查看预览并确认应用变更。应用变更成功后，系统将自动更新记忆。`,
         timestamp: Date.now()
       };
       agentMessages.value.push(successMsg);

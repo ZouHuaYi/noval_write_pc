@@ -48,9 +48,16 @@ class CharacterMemory {
   }
 
   /**
-   * 添加角色
+   * 添加角色（如果已存在同名角色，则返回现有角色的ID）
    */
   async addCharacter(character) {
+    // 先检查是否已存在同名角色
+    const existing = this.getCharacter(character.name);
+    if (existing) {
+      console.log(`ℹ️ 角色已存在: ${character.name}，跳过添加`);
+      return existing.id;
+    }
+
     const charId = character.id || this.generateCharacterId(character.name);
     
     this.data.characters[charId] = {
@@ -268,12 +275,18 @@ class CharacterMemory {
   }
 
   /**
-   * 添加角色历史事件
+   * 添加角色历史事件（如果角色不存在，先创建角色）
    */
   async addCharacterHistory(charIdOrName, event) {
-    const char = this.getCharacter(charIdOrName);
+    let char = this.getCharacter(charIdOrName);
     if (!char) {
-      throw new Error(`角色不存在: ${charIdOrName}`);
+      // 如果角色不存在，先创建
+      console.log(`⚠️ 角色不存在，先创建: ${charIdOrName}`);
+      const charId = await this.addCharacter({
+        name: charIdOrName,
+        role: 'supporting'
+      });
+      char = this.getCharacter(charId);
     }
 
     char.history.push({

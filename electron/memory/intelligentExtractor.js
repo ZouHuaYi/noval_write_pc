@@ -617,18 +617,44 @@ ${limitedContent}
         for (const char of extracted.characters) {
           try {
             if (char.action === 'add') {
-              // 添加新角色
-              await this.memoryManager.character.addCharacter({
+              // 添加新角色（如果已存在，addCharacter 会返回现有角色ID）
+              const charId = await this.memoryManager.character.addCharacter({
                 name: char.name,
                 role: 'supporting',
                 current_state: char.updates || {},
                 source: `第${chapterNumber}章提取`
               });
-              console.log(`✅ 从章节添加角色: ${char.name}`);
+              
+              // 如果角色已存在，更新其状态
+              const existing = this.memoryManager.character.getCharacter(charId);
+              if (existing && char.updates) {
+                await this.memoryManager.character.updateCharacterState(char.name, char.updates, {
+                  chapter: chapterNumber,
+                  source: 'chapter_extractor'
+                });
+                console.log(`✅ 从章节更新角色: ${char.name}`);
+              } else {
+                console.log(`✅ 从章节添加角色: ${char.name}`);
+              }
             } else if (char.action === 'update') {
               // 更新现有角色
-              await this.memoryManager.character.updateCharacterState(char.name, char.updates || {});
-              console.log(`✅ 从章节更新角色: ${char.name}`);
+              const existing = this.memoryManager.character.getCharacter(char.name);
+              if (existing) {
+                await this.memoryManager.character.updateCharacterState(char.name, char.updates || {}, {
+                  chapter: chapterNumber,
+                  source: 'chapter_extractor'
+                });
+                console.log(`✅ 从章节更新角色: ${char.name}`);
+              } else {
+                // 如果角色不存在，先创建再更新
+                console.log(`⚠️ 角色不存在，先创建: ${char.name}`);
+                await this.memoryManager.character.addCharacter({
+                  name: char.name,
+                  role: 'supporting',
+                  current_state: char.updates || {}
+                });
+                console.log(`✅ 从章节添加并更新角色: ${char.name}`);
+              }
             }
           } catch (err) {
             console.warn(`⚠️ 更新角色失败: ${char.name}`, err.message);

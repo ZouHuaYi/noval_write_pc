@@ -1203,6 +1203,185 @@ ${similarChunks.map((chunk, idx) =>
     }
   });
 
+  // 更新记忆（基于生成的文本，用于应用变更后）
+  ipcMain.handle('memory:updateFromText', async (event, { text, userRequest, intent }) => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: false, error: '记忆系统未初始化' };
+      }
+
+      // 获取 LLM 配置
+      let llmConfig = null;
+      try {
+        const defaultModel = llmModels.getDefault();
+        if (defaultModel && defaultModel.base_url && defaultModel.api_key && defaultModel.model) {
+          llmConfig = {
+            baseUrl: defaultModel.base_url,
+            apiKey: defaultModel.api_key,
+            model: defaultModel.model
+          };
+        }
+      } catch (err) {
+        console.warn('⚠️ 获取 LLM 配置失败:', err.message);
+        return { success: false, error: '无法获取 LLM 配置' };
+      }
+
+      if (!llmConfig) {
+        return { success: false, error: '未配置 LLM，无法更新记忆' };
+      }
+
+      // 创建 LLM 调用函数
+      const llmCaller = async (messages, options = {}) => {
+        const response = await fetch(`${llmConfig.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${llmConfig.apiKey}`
+          },
+          body: JSON.stringify({
+            model: llmConfig.model,
+            messages: messages,
+            temperature: options.temperature || 0.7,
+            max_tokens: options.max_tokens || 2000
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`LLM API 错误: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        return data.choices[0]?.message?.content || '';
+      };
+
+      // 加载上下文
+      const context = await currentMemory.loadContext({
+        userRequest: userRequest || '',
+        mentionedCharacters: currentMemory.extractMentionedCharacters(userRequest || ''),
+        recentChapters: 3
+      });
+
+      // 使用 MemoryUpdater 更新记忆
+      const MemoryUpdater = require('./agent/memoryUpdater');
+      const memoryUpdater = new MemoryUpdater(currentMemory);
+      
+      const result = await memoryUpdater.update(text, { userRequest }, context, llmCaller);
+      
+      // 确保返回的数据是可序列化的（memoryUpdater 已经处理了）
+      // 如果 result 中包含不可序列化的对象，这里需要进一步清理
+      if (result && typeof result === 'object') {
+        // 移除可能的不可序列化字段
+        const serializableResult = {
+          success: result.success,
+          updated: result.updated,
+          result: result.result,
+          factsSummary: result.factsSummary,
+          error: result.error
+        };
+        return serializableResult;
+      }
+      
+      return result;
+    } catch (err) {
+      console.error('❌ 更新记忆失败:', err);
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 分析指定章节文件（用于应用变更后）
+  ipcMain.handle('memory:analyzeChapter', async (event, { filePath, chapterNumber }) => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: false, error: '记忆系统未初始化' };
+      }
+
+      // 获取 LLM 配置
+      let llmConfig = null;
+      try {
+        const defaultModel = llmModels.getDefault();
+        if (defaultModel && defaultModel.base_url && defaultModel.api_key && defaultModel.model) {
+          llmConfig = {
+            baseUrl: defaultModel.base_url,
+            apiKey: defaultModel.api_key,
+            model: defaultModel.model
+          };
+        }
+      } catch (err) {
+        console.warn('⚠️ 获取 LLM 配置失败:', err.message);
+        return { success: false, error: '无法获取 LLM 配置' };
+      }
+
+      if (!llmConfig) {
+        return { success: false, error: '未配置 LLM，无法分析章节' };
+      }
+
+      // 读取文件内容
+      const fs = require('fs');
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: '文件不存在' };
+      }
+
+      const content = fs.readFileSync(filePath, 'utf-8');
+      if (!content || content.trim().length === 0) {
+        return { success: false, error: '文件内容为空' };
+      }
+
+      // 创建 LLM 调用函数
+      const llmCaller = async (messages, options = {}) => {
+        const response = await fetch(`${llmConfig.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${llmConfig.apiKey}`
+          },
+          body: JSON.stringify({
+            model: llmConfig.model,
+            messages: messages,
+            temperature: options.temperature || 0.7,
+            max_tokens: options.max_tokens || 2000
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`LLM API 错误: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        return data.choices[0]?.message?.content || '';
+      };
+
+      // 使用 IntelligentExtractor 分析章节
+      const IntelligentExtractor = require('./memory/intelligentExtractor');
+      const extractor = new IntelligentExtractor(
+        currentMemory.workspaceRoot,
+        currentMemory,
+        llmConfig
+      );
+
+      // 提取章节信息并更新记忆
+      const extracted = await extractor.extractFromChapter(content, chapterNumber, filePath);
+      if (extracted) {
+        await extractor.updateMemoryFromChapter(extracted, chapterNumber);
+        console.log(`✅ 章节分析完成: 第${chapterNumber}章`);
+        // 只返回可序列化的摘要信息，避免 IPC 克隆错误
+        return { 
+          success: true, 
+          chapterNumber,
+          summary: {
+            characters_count: extracted.characters?.length || 0,
+            plot_events_count: extracted.plot_events?.length || 0,
+            foreshadows_count: extracted.foreshadows?.length || 0
+          }
+        };
+      } else {
+        return { success: false, error: '章节提取失败' };
+      }
+    } catch (err) {
+      console.error('❌ 分析章节失败:', err);
+      return { success: false, error: err.message };
+    }
+  });
+
   // 手动触发智能提取
   ipcMain.handle('memory:extract', async (event, options = {}) => {
     try {

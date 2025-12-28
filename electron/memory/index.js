@@ -429,6 +429,8 @@ class MemoryManager {
 
       // 更新角色状态（支持状态迁移历史）
       if (updates.character_updates) {
+        console.log(`   📝 更新角色状态 (${Object.keys(updates.character_updates).length} 个角色)...`);
+        
         // 从 character_history 中提取章节号（如果存在）
         const chapterMap = {};
         if (updates.character_history) {
@@ -441,6 +443,19 @@ class MemoryManager {
 
         for (const [charName, stateUpdates] of Object.entries(updates.character_updates)) {
           try {
+            // 先检查角色是否存在
+            const existing = this.character.getCharacter(charName);
+            if (!existing) {
+              // 如果角色不存在，先创建
+              console.log(`     ⚠️ 角色不存在，先创建: ${charName}`);
+              await this.character.addCharacter({
+                name: charName,
+                role: 'supporting',
+                current_state: stateUpdates
+              });
+            }
+            
+            // 更新角色状态
             await this.character.updateCharacterState(
               charName, 
               stateUpdates,
@@ -449,35 +464,43 @@ class MemoryManager {
                 source: 'memory_updater'
               }
             );
+            console.log(`     ✅ 已更新角色: ${charName}`);
             results.character = true;
           } catch (e) {
-            console.warn(`角色更新失败: ${charName}`, e.message);
+            console.warn(`     ❌ 角色更新失败: ${charName}`, e.message);
           }
         }
       }
 
       // 添加角色历史
       if (updates.character_history) {
+        const historyCount = Object.keys(updates.character_history).length;
+        console.log(`   📚 添加角色历史 (${historyCount} 个)...`);
         for (const [charName, event] of Object.entries(updates.character_history)) {
           try {
             await this.character.addCharacterHistory(charName, event);
+            console.log(`     ✅ 已添加历史: ${charName} - ${event.event || '事件'}`);
             results.character = true;
           } catch (e) {
-            console.warn(`角色历史添加失败: ${charName}`, e.message);
+            console.warn(`     ❌ 角色历史添加失败: ${charName}`, e.message);
           }
         }
       }
 
       // 更新剧情
       if (updates.plot_updates) {
+        console.log(`   📖 更新剧情信息...`);
         if (updates.plot_updates.completed_events) {
+          console.log(`     - 添加剧情事件: ${updates.plot_updates.completed_events.length} 个`);
           for (const event of updates.plot_updates.completed_events) {
             await this.plot.addCompletedEvent(event);
+            console.log(`       ✅ ${event.name || '事件'}`);
           }
           results.plot = true;
         }
 
         if (updates.plot_updates.timeline_events) {
+          console.log(`     - 添加时间线事件: ${updates.plot_updates.timeline_events.length} 个`);
           for (const event of updates.plot_updates.timeline_events) {
             await this.plot.addTimelineEvent(event);
           }
@@ -485,6 +508,7 @@ class MemoryManager {
         }
 
         if (updates.plot_updates.current_stage) {
+          console.log(`     - 更新当前阶段: ${updates.plot_updates.current_stage}`);
           await this.plot.updateCurrentStage(updates.plot_updates.current_stage);
           results.plot = true;
         }
@@ -492,23 +516,36 @@ class MemoryManager {
 
       // 添加新伏笔
       if (updates.new_foreshadows) {
+        console.log(`   🔮 添加新伏笔 (${updates.new_foreshadows.length} 个)...`);
         for (const foreshadow of updates.new_foreshadows) {
           await this.foreshadow.addForeshadow(foreshadow);
+          console.log(`     ✅ ${foreshadow.title || '伏笔'}`);
         }
         results.foreshadow = true;
       }
 
       // 更新伏笔状态
       if (updates.foreshadow_updates) {
+        console.log(`   🔮 更新伏笔状态 (${updates.foreshadow_updates.length} 个)...`);
         for (const update of updates.foreshadow_updates) {
           if (update.action === 'reveal') {
             await this.foreshadow.revealForeshadow(update.id, update.details);
+            console.log(`     ✅ 揭示伏笔: ${update.title || update.id}`);
             results.foreshadow = true;
           } else if (update.action === 'resolve') {
             await this.foreshadow.resolveForeshadow(update.id, update.details);
+            console.log(`     ✅ 解决伏笔: ${update.title || update.id}`);
             results.foreshadow = true;
           }
         }
+      }
+
+      // 更新世界规则
+      if (updates.world_rules) {
+        console.log(`   🌍 更新世界规则...`);
+        await this.world.updateRules(updates.world_rules);
+        results.world = true;
+        console.log(`     ✅ 世界规则已更新`);
       }
 
       console.log('✅ 记忆更新完成:', results);
