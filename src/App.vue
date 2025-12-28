@@ -917,11 +917,37 @@ const confirmApplyAllChanges = async () => {
     await handleRefresh();
     
     // 步骤 2: 应用变更成功后，执行后续更新流程
+    // 检查是否已经在更新，防止重复更新
+    if (memory.isUpdating.value) {
+      console.log('ℹ️ 记忆系统正在更新中，跳过重复更新');
+      return;
+    }
+    
+    // 检查记忆系统是否已初始化
+    if (!memory.initialized.value) {
+      console.log('ℹ️ 记忆系统未初始化，尝试初始化...');
+      if (fs.workspaceRoot.value) {
+        const initResult = await memory.initMemory(fs.workspaceRoot.value);
+        if (!initResult?.success) {
+          console.warn('⚠️ 记忆系统初始化失败:', initResult?.error);
+          showAlert(`记忆系统初始化失败: ${initResult?.error}`, '警告', 'warning');
+          return;
+        }
+      } else {
+        console.warn('⚠️ 工作区未打开，无法初始化记忆系统');
+        return;
+      }
+    }
+    
     if (fs.workspaceRoot.value && memory.initialized.value && agent.currentTask.value?.executionResult) {
       const execResult = agent.currentTask.value.executionResult;
       
       if (execResult.text && execResult.userRequest) {
         try {
+          // 等待文件创建完成（延迟 1 秒，确保文件系统操作完成）
+          console.log('⏳ 等待文件创建完成...');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
           // 2.1 章节分析（如果有章节文件）
           const appliedFiles = pendingChanges
             .filter(c => c.status === 'applied')
@@ -936,7 +962,7 @@ const confirmApplyAllChanges = async () => {
           if (appliedFiles.length > 0) {
             console.log('📊 开始分析已应用的章节...');
             try {
-              // 分析每个章节文件
+              // 分析每个章节文件（添加重试机制）
               for (const file of appliedFiles) {
                 // 尝试从文件名提取章节号
                 const chapterMatch = file.fileName.match(/第(\d+)/);
@@ -944,27 +970,52 @@ const confirmApplyAllChanges = async () => {
                   const chapterNum = parseInt(chapterMatch[1]);
                   console.log(`📊 分析章节文件: 第${chapterNum}章 - ${file.fileName}`);
                   
-                  // 触发章节分析
-                  const analyzeResult = await window.api?.memory?.analyzeChapter?.(
-                    file.filePath,
-                    chapterNum
-                  );
+                  // 等待文件可读（最多重试 3 次，每次等待 500ms）
+                  let retryCount = 0;
+                  let analyzeResult = null;
                   
-                  if (analyzeResult?.success) {
-                    console.log(`✅ 章节分析完成: 第${chapterNum}章`);
-                  } else {
-                    console.warn(`⚠️ 章节分析失败: 第${chapterNum}章 - ${analyzeResult?.error}`);
+                  while (retryCount < 3 && !analyzeResult?.success) {
+                    if (retryCount > 0) {
+                      console.log(`⏳ 重试分析章节文件 (${retryCount}/3)...`);
+                      await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+                    
+                    // 触发章节分析
+                    analyzeResult = await window.api?.memory?.analyzeChapter?.(
+                      file.filePath,
+                      chapterNum
+                    );
+                    
+                    if (analyzeResult?.success) {
+                      console.log(`✅ 章节分析完成: 第${chapterNum}章`);
+                      break;
+                    } else {
+                      retryCount++;
+                      if (retryCount < 3) {
+                        console.warn(`⚠️ 章节分析失败，将重试: 第${chapterNum}章 - ${analyzeResult?.error}`);
+                      }
+                    }
+                  }
+                  
+                  if (!analyzeResult?.success) {
+                    console.warn(`⚠️ 章节分析最终失败: 第${chapterNum}章 - ${analyzeResult?.error || '未知错误'}`);
                   }
                 } else {
                   console.log(`ℹ️ 跳过非章节文件: ${file.fileName}`);
                 }
               }
-            } catch (err) {
+            } catch (err: any) {
               console.warn('⚠️ 章节分析失败:', err);
             }
           }
           
           // 2.2 更新记忆系统（基于生成的文本）
+          // 再次检查是否已经在更新（防止并发）
+          if (memory.isUpdating.value) {
+            console.log('ℹ️ 记忆系统正在更新中，跳过重复更新');
+            return;
+          }
+          
           console.log('💾 开始更新记忆系统...');
           
           // 设置更新状态
@@ -1003,9 +1054,11 @@ const confirmApplyAllChanges = async () => {
             // 无论成功失败，都要重置更新状态
             memory.isUpdating.value = false;
           }
-        } catch (err) {
+        } catch (err: any) {
           console.warn('⚠️ 更新流程失败:', err);
           showAlert(`更新流程失败: ${err.message}`, '警告', 'warning');
+          // 确保重置更新状态
+          memory.isUpdating.value = false;
         }
       }
     }
