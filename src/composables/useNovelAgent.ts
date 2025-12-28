@@ -244,22 +244,58 @@ export function useNovelAgent() {
   const resultSummary = computed(() => {
     if (!lastResult.value) return null;
     
-    return {
-      hasText: !!lastResult.value.text,
-      textLength: lastResult.value.text?.length || 0,
-      rewriteCount: lastResult.value.rewriteCount || 0,
-      executionTime: lastResult.value.executionTime || 0,
-      checkStatus: lastResult.value.checkResult?.status || 'unknown',
-      checkScore: lastResult.value.checkResult?.overall_score || 0,
-      errorCount: lastResult.value.checkResult?.errors?.length || 0,
-      coherenceScore: lastResult.value.coherenceResult?.overall_score || null,
-      coherenceStatus: lastResult.value.coherenceResult?.overall_coherence || null,
-      pacingMatch: lastResult.value.pacingComparison?.score || null,
-      emotionMatch: lastResult.value.emotionComparison?.score || null,
-      densityMatch: lastResult.value.densityComparison?.score || null,
-      chapterPlan: lastResult.value.chapterPlan,
-      report: lastResult.value.report
+    // 安全获取数值，确保 undefined 转换为 null
+    const safeGetNumber = (value: any): number | null => {
+      if (value === null || value === undefined) return null;
+      if (typeof value === 'number') {
+        // 确保是有效数字
+        if (isNaN(value) || !isFinite(value)) return null;
+        return value;
+      }
+      if (typeof value === 'string') {
+        const parsed = parseFloat(value);
+        return isNaN(parsed) || !isFinite(parsed) ? null : parsed;
+      }
+      return null;
     };
+    
+    try {
+      return {
+        hasText: !!lastResult.value.text,
+        textLength: lastResult.value.text?.length || 0,
+        rewriteCount: safeGetNumber(lastResult.value.rewriteCount) ?? 0,
+        executionTime: safeGetNumber(lastResult.value.executionTime) ?? 0,
+        checkStatus: lastResult.value.checkResult?.status || 'unknown',
+        checkScore: safeGetNumber(lastResult.value.checkResult?.overall_score) ?? 0,
+        errorCount: lastResult.value.checkResult?.errors?.length || 0,
+        coherenceScore: safeGetNumber(lastResult.value.coherenceResult?.overall_score),
+        coherenceStatus: lastResult.value.coherenceResult?.overall_coherence || null,
+        pacingMatch: safeGetNumber(lastResult.value.pacingComparison?.score),
+        emotionMatch: safeGetNumber(lastResult.value.emotionComparison?.score),
+        densityMatch: safeGetNumber(lastResult.value.densityComparison?.score),
+        chapterPlan: lastResult.value.chapterPlan || null,
+        report: lastResult.value.report || null
+      };
+    } catch (error) {
+      console.error('计算 resultSummary 时出错:', error);
+      // 返回一个安全的默认值
+      return {
+        hasText: false,
+        textLength: 0,
+        rewriteCount: 0,
+        executionTime: 0,
+        checkStatus: 'unknown',
+        checkScore: 0,
+        errorCount: 0,
+        coherenceScore: null,
+        coherenceStatus: null,
+        pacingMatch: null,
+        emotionMatch: null,
+        densityMatch: null,
+        chapterPlan: null,
+        report: null
+      };
+    }
   });
 
   return {

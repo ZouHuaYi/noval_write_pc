@@ -134,7 +134,7 @@ class ReportGenerator {
       }
 
       if (report.result.coherence) {
-        text += `  - 连贯性检查: ${report.result.coherence.overall} (${report.result.coherence.score.toFixed(1)}分)\n`;
+        text += `  - 连贯性检查: ${report.result.coherence.overall} (${report.result.coherence.score}分)\n`;
         text += `    - 情节: ${report.result.coherence.plotScore}分\n`;
         text += `    - 情绪: ${report.result.coherence.emotionScore}分\n`;
         text += `    - 节奏: ${report.result.coherence.pacingScore}分\n`;
@@ -143,15 +143,15 @@ class ReportGenerator {
       if (report.result.pacing) {
         text += `  - 节奏分析: ${report.result.pacing.overall}`;
         if (report.result.pacing.matchScore !== null) {
-          text += ` (匹配度: ${report.result.pacing.matchScore.toFixed(1)}%)`;
+          text += ` (匹配度: ${report.result.pacing.matchScore}%)`;
         }
         text += '\n';
       }
 
       if (report.result.emotion) {
-        text += `  - 情绪曲线: ${report.result.emotion.start.toFixed(2)} → ${report.result.emotion.peak.toFixed(2)} → ${report.result.emotion.end.toFixed(2)}`;
+        text += `  - 情绪曲线: ${report.result.emotion.start} → ${report.result.emotion.peak} → ${report.result.emotion.end}`;
         if (report.result.emotion.matchScore !== null) {
-          text += ` (匹配度: ${report.result.emotion.matchScore.toFixed(1)}%)`;
+          text += ` (匹配度: ${report.result.emotion.matchScore}%)`;
         }
         text += '\n';
       }
@@ -159,7 +159,7 @@ class ReportGenerator {
       if (report.result.density) {
         text += `  - 密度分析: ${report.result.density.overall}`;
         if (report.result.density.matchScore !== null) {
-          text += ` (匹配度: ${report.result.density.matchScore.toFixed(1)}%)`;
+          text += ` (匹配度: ${report.result.density.matchScore}%)`;
         }
         text += '\n';
       }

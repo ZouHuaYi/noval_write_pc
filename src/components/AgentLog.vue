@@ -83,13 +83,13 @@
       </div>
 
       <!-- 连贯性检查结果 -->
-      <div v-if="agent.resultSummary.value.coherenceScore !== null" class="mt-4 pt-4 border-t border-slate-700">
+      <div v-if="agent.resultSummary.value.coherenceScore !== null && agent.resultSummary.value.coherenceScore !== undefined" class="mt-4 pt-4 border-t border-slate-700">
         <h5 class="text-xs font-semibold text-slate-300 mb-2">🔗 连贯性检查</h5>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div class="flex flex-col gap-1">
             <span class="text-xs text-slate-400">总体评分</span>
             <span :class="['text-sm font-semibold', getCoherenceClass(agent.resultSummary.value.coherenceScore)]">
-              {{ agent.resultSummary.value.coherenceScore.toFixed(1) }}/100
+              {{ typeof agent.resultSummary.value.coherenceScore === 'number' ? agent.resultSummary.value.coherenceScore.toFixed(1) : 'N/A' }}/100
             </span>
             <span class="text-xs text-slate-500">
               {{ getCoherenceStatusLabel(agent.resultSummary.value.coherenceStatus) }}
@@ -99,25 +99,25 @@
       </div>
 
       <!-- 曲线分析结果 -->
-      <div v-if="agent.resultSummary.value.pacingMatch !== null || agent.resultSummary.value.emotionMatch !== null" class="mt-4 pt-4 border-t border-slate-700">
+      <div v-if="(agent.resultSummary.value.pacingMatch !== null && agent.resultSummary.value.pacingMatch !== undefined) || (agent.resultSummary.value.emotionMatch !== null && agent.resultSummary.value.emotionMatch !== undefined) || (agent.resultSummary.value.densityMatch !== null && agent.resultSummary.value.densityMatch !== undefined)" class="mt-4 pt-4 border-t border-slate-700">
         <h5 class="text-xs font-semibold text-slate-300 mb-2">📊 曲线分析</h5>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div v-if="agent.resultSummary.value.pacingMatch !== null" class="flex flex-col gap-1">
+          <div v-if="agent.resultSummary.value.pacingMatch !== null && agent.resultSummary.value.pacingMatch !== undefined" class="flex flex-col gap-1">
             <span class="text-xs text-slate-400">节奏匹配度</span>
             <span :class="['text-sm font-semibold', getMatchClass(agent.resultSummary.value.pacingMatch)]">
-              {{ agent.resultSummary.value.pacingMatch.toFixed(1) }}%
+              {{ typeof agent.resultSummary.value.pacingMatch === 'number' ? agent.resultSummary.value.pacingMatch.toFixed(1) : 'N/A' }}%
             </span>
           </div>
-          <div v-if="agent.resultSummary.value.emotionMatch !== null" class="flex flex-col gap-1">
+          <div v-if="agent.resultSummary.value.emotionMatch !== null && agent.resultSummary.value.emotionMatch !== undefined" class="flex flex-col gap-1">
             <span class="text-xs text-slate-400">情绪匹配度</span>
             <span :class="['text-sm font-semibold', getMatchClass(agent.resultSummary.value.emotionMatch)]">
-              {{ agent.resultSummary.value.emotionMatch.toFixed(1) }}%
+              {{ typeof agent.resultSummary.value.emotionMatch === 'number' ? agent.resultSummary.value.emotionMatch.toFixed(1) : 'N/A' }}%
             </span>
           </div>
-          <div v-if="agent.resultSummary.value.densityMatch !== null" class="flex flex-col gap-1">
+          <div v-if="agent.resultSummary.value.densityMatch !== null && agent.resultSummary.value.densityMatch !== undefined" class="flex flex-col gap-1">
             <span class="text-xs text-slate-400">密度匹配度</span>
             <span :class="['text-sm font-semibold', getMatchClass(agent.resultSummary.value.densityMatch)]">
-              {{ agent.resultSummary.value.densityMatch.toFixed(1) }}%
+              {{ typeof agent.resultSummary.value.densityMatch === 'number' ? agent.resultSummary.value.densityMatch.toFixed(1) : 'N/A' }}%
             </span>
           </div>
         </div>
@@ -252,19 +252,21 @@ const formatData = (data: any) => {
   return JSON.stringify(data, null, 2);
 };
 
-const formatExecutionTime = (ms: number) => {
-  if (!ms) return '0s';
+const formatExecutionTime = (ms: number | null | undefined) => {
+  if (ms === null || ms === undefined || typeof ms !== 'number') return '0s';
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
 };
 
-const getCoherenceClass = (score: number) => {
+const getCoherenceClass = (score: number | null | undefined) => {
+  if (score === null || score === undefined || typeof score !== 'number') return 'text-slate-400';
   if (score >= 80) return 'text-emerald-400';
   if (score >= 60) return 'text-yellow-400';
   return 'text-red-400';
 };
 
-const getCoherenceStatusLabel = (status: string) => {
+const getCoherenceStatusLabel = (status: string | null | undefined) => {
+  if (!status) return '未知';
   const labels: Record<string, string> = {
     good: '✅ 良好',
     fair: '⚠️ 一般',
@@ -273,7 +275,8 @@ const getCoherenceStatusLabel = (status: string) => {
   return labels[status] || status;
 };
 
-const getMatchClass = (score: number) => {
+const getMatchClass = (score: number | null | undefined) => {
+  if (score === null || score === undefined || typeof score !== 'number') return 'text-slate-400';
   if (score >= 80) return 'text-emerald-400';
   if (score >= 60) return 'text-yellow-400';
   return 'text-red-400';

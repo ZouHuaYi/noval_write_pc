@@ -1,7 +1,7 @@
 {
   "name": "novel-ide",
   "productName": "小说写作IDE",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "AI驱动的本地小说写作IDE - 支持智能润色、扩写、续写和一致性校验",
   "author": "Your Name",
   "main": "electron/main.js",
