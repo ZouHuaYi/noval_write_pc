@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-col h-full bg-slate-950/90 border-l border-slate-800">
+  <div class="flex flex-col h-full min-h-0 bg-slate-950/90 border-l border-slate-800">
     <!-- 顶部标题栏 -->
     <div class="px-4 py-3 border-b border-slate-800 bg-gradient-to-r from-emerald-900/20 to-transparent">
       <div class="flex items-center justify-between">
@@ -21,7 +21,7 @@
     </div>
 
     <!-- 消息列表 -->
-    <div ref="messageListRef" class="flex-1 overflow-auto px-3 py-2 space-y-2">
+    <div ref="messageListRef" class="flex-1 min-h-0 overflow-auto px-3 py-2 space-y-2">
       <!-- 欢迎提示 -->
       <div v-if="agentMessages.length === 0 && !isLoading" class="text-[11px] text-slate-400 space-y-3 p-3">
         <div class="flex items-start gap-2">

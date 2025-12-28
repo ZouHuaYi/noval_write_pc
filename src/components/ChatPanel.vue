@@ -1,5 +1,5 @@
 <template>
-  <div class="h-full bg-slate-950/70 flex flex-col">
+  <div class="h-full min-h-0 bg-slate-950/70 flex flex-col">
     <!-- 顶部工具栏 -->
     <div class="border-b border-slate-800 p-2 space-y-2">
       <!-- 提示文件状态 -->
@@ -54,7 +54,7 @@
     </div>
 
     <!-- 消息列表 -->
-    <div ref="messageListRef" class="flex-1 overflow-auto px-3 py-2 space-y-2 text-xs">
+    <div ref="messageListRef" class="flex-1 min-h-0 overflow-auto px-3 py-2 space-y-2 text-xs">
       <div
         v-for="msg in messages"
         :key="msg.id"

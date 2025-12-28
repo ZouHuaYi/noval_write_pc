@@ -6,15 +6,14 @@
   >
     <div class="bg-slate-800 rounded-lg shadow-xl border border-slate-700 w-96 p-5">
       <h3 class="text-lg font-semibold text-slate-100 mb-3">{{ title }}</h3>
-      <input
+      <textarea
         ref="inputRef"
         v-model="inputValue"
-        type="text"
         class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500 mb-4"
         :placeholder="placeholder"
-        @keyup.enter="onConfirm"
-        @keyup.esc="onCancel"
-      />
+        @keydown.enter="onConfirm"
+        @keydown.esc="onCancel"
+      ></textarea>
       <div class="flex justify-end gap-2">
         <button
           class="px-4 py-2 rounded bg-slate-700 hover:bg-slate-600 text-slate-200"

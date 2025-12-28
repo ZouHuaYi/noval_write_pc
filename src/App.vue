@@ -2,11 +2,9 @@
   <div class="flex flex-col h-full bg-slate-900 text-slate-100">
     <TitleBar />
     <TopBar
-      @open-local-file="handleOpenLocalFile"
       @open-folder="handleOpenFolder"
       @open-workspace="handleOpenWorkspace"
       @open-settings="showSettingsDialog = true"
-      @check-consistency="handleCheckCurrentFile"
       @batch-check="handleBatchCheck"
       @view-history="ai.showConsistencyHistory.value = true"
     />
@@ -56,6 +54,12 @@
               @click="handleSaveFile"
             >
               保存 (Ctrl+S)
+            </button>
+            <button
+              class="text-xs px-2 py-0.5 rounded bg-slate-600 hover:bg-slate-500 text-white"
+              @click="handleCopyContent"
+            >
+              复制
             </button>
           </div>
         </div>
@@ -505,13 +509,6 @@ const initializeEditor = async () => {
   }
 };
 
-// 文件操作处理
-const handleOpenLocalFile = async () => {
-  await fs.openLocalFile((content) => {
-    editor.setContent(content);
-  });
-};
-
 const handleOpenFolder = async () => {
   await fs.openFolder(async () => {
     editor.setContent('');
@@ -529,7 +526,6 @@ const handleOpenWorkspace = async (data: { rootDir: string; rootName: string; fi
 const handleOpenFile = async (id: string) => {
   await fs.openFileById(id, (content) => {
     editor.setContent(content);
-    
     // 检查是否是提示文件
     const file = fs.currentFile.value;
     if (file) {
@@ -546,6 +542,12 @@ const handleOpenFile = async (id: string) => {
       }
     }
   });
+};
+
+const handleCopyContent = () => {
+  const content = editor.getContent();
+  navigator.clipboard.writeText(content.replace(/\r\n\r\n/g, '\r\n'));
+  showAlert('已复制到剪贴板', '提示', 'info');
 };
 
 const handleSaveFile = async () => {
@@ -765,30 +767,6 @@ const handleContextMenu = async (mode: string) => {
   }
 };
 
-// 一致性校验
-const handleCheckCurrentFile = async () => {
-  if (!fs.currentFile.value) {
-    showAlert('请先打开一个文件', '提示', 'info');
-    return;
-  }
-
-  const fullText = editor.getContent();
-  if (!fullText || !fullText.trim()) {
-    showAlert('当前文件为空，无法进行校验', '提示', 'info');
-    return;
-  }
-
-  const limitedText = fullText.length > 5000 
-    ? fullText.substring(0, 5000) + '\n\n[文本过长，仅校验前5000字]'
-    : fullText;
-
-  await ai.checkConsistency(
-    limitedText,
-    fs.workspaceRoot.value,
-    fs.currentFile.value.path || ''
-  );
-};
-
 const handleBatchCheck = () => {
   if (!fs.workspaceRoot.value) {
     showAlert('请先打开一个工作区', '提示', 'info');
@@ -935,5 +913,31 @@ onBeforeUnmount(() => {
 .context-menu {
   position: absolute;
   z-index: 50;
+}
+</style>
+
+<style>
+
+  /* 整体滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+/* 滚动条轨道 */
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 滚动条滑块 */
+::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.4);
+  border-radius: 6px;
+  transition: background-color 0.2s;
+}
+
+/* hover 时 */
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.7);
 }
 </style>

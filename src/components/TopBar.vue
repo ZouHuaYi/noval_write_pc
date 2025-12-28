@@ -5,15 +5,6 @@
     <div class="flex items-center gap-3">
       <div class="flex items-center gap-2 text-xs">
         <button
-          class="px-3 py-1 rounded-md border border-emerald-600/30 bg-emerald-900/20 text-emerald-400 hover:bg-emerald-900/40 transition-all flex items-center gap-1.5"
-          @click="$emit('open-local-file')"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-          </svg>
-          打开文件
-        </button>
-        <button
           class="px-3 py-1 rounded-md border border-teal-600/30 bg-teal-900/20 text-teal-400 hover:bg-teal-900/40 transition-all flex items-center gap-1.5"
           @click="$emit('open-folder')"
         >
@@ -49,16 +40,6 @@
           一致性校验
         </span>
       </div>
-      <button
-        class="px-2.5 py-1 rounded-md border border-rose-600/30 bg-rose-900/20 text-rose-400 hover:bg-rose-900/40 transition-all text-xs flex items-center gap-1.5"
-        title="校验当前文件"
-        @click="$emit('check-consistency')"
-      >
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
-        </svg>
-        校验文件
-      </button>
       <button
         class="px-2.5 py-1 rounded-md border border-orange-600/30 bg-orange-900/20 text-orange-400 hover:bg-orange-900/40 transition-all text-xs flex items-center gap-1.5"
         title="批量校验多个文件"
