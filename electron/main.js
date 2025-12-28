@@ -16,6 +16,50 @@ let watchedWorkspaceRoot = null; // 当前监听的工作区路径
 
 const isDev = !app.isPackaged;
 
+// 文件监听器函数
+function startFileWatcher(workspaceRoot) {
+  // 如果已经有监听器在运行，先停止它
+  if (fileWatcher) {
+    stopFileWatcher();
+  }
+  
+  // 如果工作区路径相同，不需要重新启动
+  if (watchedWorkspaceRoot === workspaceRoot) {
+    return;
+  }
+  
+  try {
+    // 使用 Node.js 的 fs.watch 监听文件变化
+    // 注意：这里只是简单实现，如果需要更强大的功能可以使用 chokidar
+    fileWatcher = fs.watch(workspaceRoot, { recursive: true }, (eventType, filename) => {
+      if (filename) {
+        // 文件变化时的处理逻辑（可以根据需要添加）
+        console.log(`文件变化: ${eventType} - ${filename}`);
+      }
+    });
+    
+    watchedWorkspaceRoot = workspaceRoot;
+    console.log(`文件监听已启动: ${workspaceRoot}`);
+  } catch (err) {
+    console.error('启动文件监听失败:', err);
+    fileWatcher = null;
+    watchedWorkspaceRoot = null;
+  }
+}
+
+function stopFileWatcher() {
+  if (fileWatcher) {
+    try {
+      fileWatcher.close();
+      console.log('文件监听已停止');
+    } catch (err) {
+      console.error('停止文件监听失败:', err);
+    }
+    fileWatcher = null;
+    watchedWorkspaceRoot = null;
+  }
+}
+
 // 文本分块函数
 function splitTextIntoChunks(text, chunkSize = 500) {
   const chunks = [];
@@ -1636,6 +1680,57 @@ ${similarChunks.map((chunk, idx) =>
       const stats = currentAgent.ruleEngine.getStatistics();
       return { success: true, stats };
     } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 读取使用说明文档
+  ipcMain.handle('guide:read', async () => {
+    try {
+      // 尝试多个可能的路径
+      const possiblePaths = [];
+      
+      // 1. 开发环境：app.getAppPath() 返回项目根目录
+      const appPath = app.getAppPath();
+      possiblePaths.push(path.join(appPath, 'docs', '使用说明.md'));
+      
+      // 2. 打包后：docs 在 asar 中
+      // app.getAppPath() 在打包后返回 app.asar 路径，docs 应该在 asar 中
+      // 如果 asar 路径包含 .asar，尝试直接使用
+      if (appPath.includes('.asar')) {
+        possiblePaths.push(path.join(appPath, 'docs', '使用说明.md'));
+      }
+      
+      // 3. 尝试使用 process.resourcesPath（打包后的资源路径）
+      if (process.resourcesPath) {
+        possiblePaths.push(path.join(process.resourcesPath, 'app', 'docs', '使用说明.md'));
+        possiblePaths.push(path.join(process.resourcesPath, 'app.asar', 'docs', '使用说明.md'));
+      }
+      
+      // 4. 尝试使用 __dirname（electron 主进程目录）
+      possiblePaths.push(path.join(__dirname, '..', 'docs', '使用说明.md'));
+      
+      // 查找第一个存在的文件
+      let guidePath = null;
+      for (const testPath of possiblePaths) {
+        if (fs.existsSync(testPath)) {
+          guidePath = testPath;
+          break;
+        }
+      }
+      
+      if (!guidePath) {
+        console.error('使用说明文档未找到，尝试的路径：', possiblePaths);
+        return { 
+          success: false, 
+          error: `使用说明文档不存在。尝试的路径：${possiblePaths.join(', ')}` 
+        };
+      }
+      
+      const content = await fs.promises.readFile(guidePath, 'utf-8');
+      return { success: true, content };
+    } catch (err) {
+      console.error('读取使用说明文档失败:', err);
       return { success: false, error: err.message };
     }
   });

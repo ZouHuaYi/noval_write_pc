@@ -1,7 +1,7 @@
 {
   "name": "novel-ide",
   "productName": "小说写作IDE",
-  "version": "1.0.0",
+  "version": "2.0.1",
   "description": "AI驱动的本地小说写作IDE - 支持智能润色、扩写、续写和一致性校验",
   "author": "Your Name",
   "main": "electron/main.js",
@@ -10,9 +10,13 @@
     "build": "vite build",
     "preview": "vite preview",
     "dev:el": "chcp 65001 && electron .",
+    "clean": "powershell -ExecutionPolicy Bypass -File ./clean-release.ps1",
+    "clean:force": "powershell -Command \"Get-Process | Where-Object {$_.ProcessName -like '*electron*' -or $_.ProcessName -like '*node*'} | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; if (Test-Path 'release') { Get-ChildItem -Path 'release' -Recurse -Force | ForEach-Object { $_.Attributes = 'Normal' }; Remove-Item -Path 'release' -Recurse -Force -ErrorAction SilentlyContinue }; if (Test-Path 'dist') { Remove-Item -Path 'dist' -Recurse -Force -ErrorAction SilentlyContinue }; Write-Host '清理完成'\"",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
+    "dist:win:skip-clean": "npm run build && electron-builder --win",
+    "dist:win:clean": "npm run clean:force && timeout /t 3 /nobreak >nul && npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac"
   },
   "build": {
@@ -26,6 +30,7 @@
       "dist/**/*",
       "electron/**/*",
       "rules/**/*",
+      "docs/**/*",
       "package.json"
     ],
     "extraResources": [

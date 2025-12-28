@@ -146,6 +146,10 @@ contextBridge.exposeInMainWorld('api', {
     getAll: async () => await ipcRenderer.invoke('rules:getAll'),
     reload: async () => await ipcRenderer.invoke('rules:reload'),
     getStats: async () => await ipcRenderer.invoke('rules:getStats')
+  },
+  // ========== 使用说明 ==========
+  guide: {
+    read: async () => await ipcRenderer.invoke('guide:read')
   }
 });
 

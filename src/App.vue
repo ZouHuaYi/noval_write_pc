@@ -5,6 +5,7 @@
       @open-folder="handleOpenFolder"
       @open-workspace="handleOpenWorkspace"
       @open-settings="showSettingsDialog = true"
+      @open-guide="showUserGuideDialog = true"
       @batch-check="handleBatchCheck"
       @view-history="ai.showConsistencyHistory.value = true"
     />
@@ -276,6 +277,12 @@
       @close="handleSettingsClose"
     />
 
+    <!-- 使用说明对话框 -->
+    <UserGuideDialog
+      :visible="showUserGuideDialog"
+      @close="showUserGuideDialog = false"
+    />
+
     <!-- 输入对话框 -->
     <InputDialog
       :visible="dialogs.inputDialog.show"
@@ -391,6 +398,7 @@ import RuleEditor from './components/RuleEditor.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import TitleBar from './components/TitleBar.vue';
 import TopBar from './components/TopBar.vue';
+import UserGuideDialog from './components/UserGuideDialog.vue';
 import VectorIndexDialog from './components/VectorIndexDialog.vue';
 import { useAI } from './composables/useAI';
 import type { FileChange } from './composables/useAgent';
@@ -456,6 +464,7 @@ const rules = useRules();
 // 其他状态
 const showSettingsDialog = ref(false);
 const showVectorIndexDialog = ref(false);
+const showUserGuideDialog = ref(false);
 const chatPanelRef = ref<any>(null);
 const rightPanelMode = ref<'chat' | 'agent' | 'memory' | 'log' | 'rules'>('chat');
 const editorEl = ref<HTMLElement | null>(null);
