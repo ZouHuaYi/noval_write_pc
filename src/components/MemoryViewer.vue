@@ -5,12 +5,20 @@
       <h3 class="text-lg font-semibold text-slate-200">📚 记忆系统</h3>
       <div class="flex gap-2">
         <button
-          @click="handleIntelligentExtract"
+          @click="handleIntelligentExtract(false)"
           :disabled="!memory.initialized.value || isExtracting"
           class="btn-icon text-emerald-400"
-          title="智能提取文件内容"
+          title="智能提取文件内容（增量）"
         >
           <span>🧠</span>
+        </button>
+        <button
+          @click="handleIntelligentExtract(true)"
+          :disabled="!memory.initialized.value || isExtracting"
+          class="btn-icon text-amber-400"
+          title="强制重新扫描所有文件"
+        >
+          <span>🔄</span>
         </button>
         <button
           @click="handleRefresh"
@@ -275,9 +283,22 @@ const getImportanceLabel = (importance: string) => {
 };
 
 const handleRefresh = async () => {
-  await memory.getSummary();
-  await memory.getAllCharacters();
-  await memory.getPendingForeshadows();
+  // 如果未初始化，先尝试初始化
+  if (!memory.initialized.value && props.workspaceRoot) {
+    console.log('🔄 记忆系统未初始化，尝试初始化...');
+    const initResult = await memory.initMemory(props.workspaceRoot);
+    if (!initResult?.success) {
+      console.error('❌ 初始化失败:', initResult?.error);
+      return;
+    }
+  }
+
+  // 如果已初始化，刷新数据
+  if (memory.initialized.value) {
+    await memory.getSummary();
+    await memory.getAllCharacters();
+    await memory.getPendingForeshadows();
+  }
 };
 
 const handleExport = async () => {
@@ -295,9 +316,17 @@ const handleExport = async () => {
 };
 
 const handleReset = async () => {
-  await memory.resetMemory();
+  const result = await memory.resetMemory(props.workspaceRoot || undefined);
   showResetConfirm.value = false;
-  handleRefresh();
+  
+  if (result?.success) {
+    // 如果重置成功，等待重新初始化完成后再刷新
+    setTimeout(() => {
+      handleRefresh();
+    }, 1000);
+  } else {
+    handleRefresh();
+  }
 };
 
 const handleManualInit = async () => {
@@ -310,29 +339,57 @@ const handleManualInit = async () => {
   console.log('工作区路径:', props.workspaceRoot);
   
   try {
+    // 重置加载状态
+    memory.isLoading.value = true;
+    memory.error.value = '';
+
     const result = await memory.initMemory(props.workspaceRoot);
     if (result?.success) {
+      // 初始化成功后，加载数据
+      await memory.getSummary();
       await memory.getAllCharacters();
       await memory.getPendingForeshadows();
-      await memory.getSummary();
-      await novelAgent.initAgent(props.workspaceRoot);
+      
+      // 同时初始化 Novel Agent
+      try {
+        await novelAgent.initAgent(props.workspaceRoot);
+      } catch (err) {
+        console.warn('⚠️ Novel Agent 初始化失败:', err);
+      }
+      
       console.log('✅ 手动初始化成功');
     } else {
       console.error('❌ 初始化失败:', result?.error);
+      memory.error.value = result?.error || '初始化失败';
     }
   } catch (err: any) {
     console.error('❌ 初始化过程出错:', err);
+    memory.error.value = err.message || '初始化过程出错';
+  } finally {
+    memory.isLoading.value = false;
   }
 };
 
-const handleIntelligentExtract = async () => {
-  if (!props.workspaceRoot || !memory.initialized.value) {
-    console.warn('⚠️ 工作区或记忆系统未初始化');
+const handleIntelligentExtract = async (forceRescan: boolean = false) => {
+  if (!props.workspaceRoot) {
+    console.warn('⚠️ 工作区路径为空');
     return;
   }
 
+  // 如果未初始化，先尝试初始化
+  if (!memory.initialized.value) {
+    console.log('🔄 记忆系统未初始化，尝试初始化...');
+    const initResult = await memory.initMemory(props.workspaceRoot);
+    if (!initResult?.success) {
+      console.error('❌ 初始化失败:', initResult?.error);
+      isExtracting.value = false;
+      extractProgress.value = null;
+      return;
+    }
+  }
+
   isExtracting.value = true;
-  extractProgress.value = { current: 0, total: 100, percentage: 0, message: '准备提取...' };
+  extractProgress.value = { current: 0, total: 100, percentage: 0, message: forceRescan ? '强制重新扫描...' : '准备提取...' };
 
   try {
     // 设置进度监听
@@ -343,7 +400,8 @@ const handleIntelligentExtract = async () => {
     // 执行提取（分批处理，每批5个，处理全部）
     const result = await window.api?.memory?.extract({
       chapterBatchSize: 5,
-      maxChapters: 0 // 0 表示处理全部
+      maxChapters: 0, // 0 表示处理全部
+      forceRescan: forceRescan // 强制重新扫描
     });
 
     if (result?.success) {

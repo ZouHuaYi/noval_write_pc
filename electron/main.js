@@ -11,6 +11,8 @@ const MemoryManager = require('./memory');
 let mainWindow;
 let currentAgent = null; // 当前工作区的 Agent 实例
 let currentMemory = null; // 当前工作区的 Memory 实例
+let fileWatcher = null; // 文件监听器
+let watchedWorkspaceRoot = null; // 当前监听的工作区路径
 
 const isDev = !app.isPackaged;
 
@@ -1010,8 +1012,21 @@ ${similarChunks.map((chunk, idx) =>
   // 获取记忆摘要
   ipcMain.handle('memory:getSummary', async () => {
     try {
-      if (!currentMemory || !currentMemory.initialized) {
-        return { success: false, error: '记忆系统未初始化' };
+      if (!currentMemory) {
+        return { success: false, error: '记忆系统不存在，请先打开工作区' };
+      }
+
+      // 如果未初始化，返回空摘要而不是错误
+      if (!currentMemory.initialized) {
+        return { 
+          success: true, 
+          summary: {
+            world: { has_cultivation_system: false, has_magic_system: false, custom_rules_count: 0 },
+            character: { total_characters: 0, main_characters: 0 },
+            plot: { current_stage: '未知', completed_events_count: 0, pending_goals_count: 0 },
+            foreshadow: { total: 0, pending: 0, revealed: 0, resolved: 0 }
+          }
+        };
       }
 
       const summary = await currentMemory.getSummary();
@@ -1066,8 +1081,13 @@ ${similarChunks.map((chunk, idx) =>
   // 获取所有角色
   ipcMain.handle('memory:getAllCharacters', async () => {
     try {
-      if (!currentMemory || !currentMemory.initialized) {
-        return { success: false, error: '记忆系统未初始化' };
+      if (!currentMemory) {
+        return { success: true, characters: [] };
+      }
+
+      // 如果未初始化，返回空数组
+      if (!currentMemory.initialized) {
+        return { success: true, characters: [] };
       }
 
       const characters = currentMemory.character.getAllCharacters();
@@ -1094,8 +1114,13 @@ ${similarChunks.map((chunk, idx) =>
   // 获取待处理的伏笔
   ipcMain.handle('memory:getPendingForeshadows', async () => {
     try {
-      if (!currentMemory || !currentMemory.initialized) {
-        return { success: false, error: '记忆系统未初始化' };
+      if (!currentMemory) {
+        return { success: true, foreshadows: [] };
+      }
+
+      // 如果未初始化，返回空数组
+      if (!currentMemory.initialized) {
+        return { success: true, foreshadows: [] };
       }
 
       const foreshadows = currentMemory.foreshadow.getPendingForeshadows();
@@ -1164,11 +1189,14 @@ ${similarChunks.map((chunk, idx) =>
   // 重置记忆
   ipcMain.handle('memory:reset', async () => {
     try {
-      if (!currentMemory || !currentMemory.initialized) {
-        return { success: false, error: '记忆系统未初始化' };
+      // 允许重置未初始化的系统（用于清理状态）
+      if (!currentMemory) {
+        return { success: false, error: '记忆系统不存在' };
       }
 
       await currentMemory.resetAll();
+      // 重置后，currentMemory 仍然存在，但 initialized 为 false
+      // 需要重新调用 initialize 才能使用
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1178,8 +1206,42 @@ ${similarChunks.map((chunk, idx) =>
   // 手动触发智能提取
   ipcMain.handle('memory:extract', async (event, options = {}) => {
     try {
-      if (!currentMemory || !currentMemory.initialized) {
-        return { success: false, error: '记忆系统未初始化' };
+      // 如果未初始化，尝试自动初始化
+      if (!currentMemory) {
+        return { success: false, error: '记忆系统不存在，请先打开工作区' };
+      }
+
+      if (!currentMemory.initialized) {
+        // 尝试自动初始化
+        const workspaceRoot = currentMemory.workspaceRoot;
+        if (!workspaceRoot) {
+          return { success: false, error: '工作区路径为空，无法初始化' };
+        }
+
+        console.log('🔄 记忆系统未初始化，尝试自动初始化...');
+        
+        // 获取 LLM 配置
+        let llmConfig = null;
+        try {
+          const defaultModel = llmModels.getDefault();
+          if (defaultModel && defaultModel.base_url && defaultModel.api_key && defaultModel.model) {
+            llmConfig = {
+              baseUrl: defaultModel.base_url,
+              apiKey: defaultModel.api_key,
+              model: defaultModel.model
+            };
+          }
+        } catch (err) {
+          console.warn('⚠️ 获取 LLM 配置失败:', err.message);
+        }
+
+        const initResult = await currentMemory.initialize(llmConfig);
+        if (!initResult.success) {
+          return { success: false, error: '自动初始化失败: ' + initResult.error };
+        }
+
+        // 初始化成功后，启动文件监听
+        startFileWatcher(workspaceRoot);
       }
 
       // 获取 LLM 配置
@@ -1212,6 +1274,7 @@ ${similarChunks.map((chunk, idx) =>
       const result = await currentMemory.intelligentExtract({
         chapterBatchSize: options.chapterBatchSize || 5,
         maxChapters: options.maxChapters || 0,
+        forceRescan: options.forceRescan || false, // 支持强制重新扫描
         onProgress: (progress) => {
           // 通过事件发送进度更新
           if (event.sender && !event.sender.isDestroyed()) {
@@ -1406,6 +1469,7 @@ ${similarChunks.map((chunk, idx) =>
 });
 
 app.on('window-all-closed', () => {
+  stopFileWatcher(); // 停止文件监听
   closeDatabase();
   if (process.platform !== 'darwin') {
     app.quit();

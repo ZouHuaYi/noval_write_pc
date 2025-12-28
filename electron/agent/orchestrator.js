@@ -4,26 +4,61 @@
  */
 
 const MemoryManager = require('../memory');
-const RuleEngine = require('../rules/ruleEngine');
+const RuleEngine = require('../rules/ruleEngine'); // 保留旧规则引擎作为兼容
+const DSLRuleEngine = require('../rules/dslRuleEngine'); // 新的 DSL 规则引擎
 const IntentPlanner = require('./intentPlanner');
 const ConsistencyChecker = require('./consistencyChecker');
 const RewriteAgent = require('./rewriter');
 const MemoryUpdater = require('./memoryUpdater');
+const FileScanner = require('./fileScanner'); // 文件扫描器
+const ChapterAnalyzer = require('./chapterAnalyzer'); // 章节分析器
+const ChapterPlanner = require('./chapterPlanner'); // 章节规划器
+const ChapterFileManager = require('../memory/chapterFileManager'); // 章节文件管理器
+const CoherenceChecker = require('./coherenceChecker'); // 连贯性检查器
+const PacingController = require('./pacingController'); // 节奏控制器
+const EmotionCurveManager = require('./emotionCurveManager'); // 情绪曲线管理器
+const DensityController = require('./densityController'); // 密度控制器
+const SceneStructurePlanner = require('./sceneStructurePlanner'); // 场景结构规划器
+const ErrorHandler = require('./utils/errorHandler'); // 错误处理工具
+const PerformanceOptimizer = require('./utils/performanceOptimizer'); // 性能优化工具
+const ReportGenerator = require('./utils/reportGenerator'); // 报告生成器
 const { AgentStates } = require('../memory/types');
+const fs = require('fs').promises;
+const path = require('path');
+const { app } = require('electron');
 
 class AgentOrchestrator {
   constructor(workspaceRoot) {
     this.workspaceRoot = workspaceRoot;
     this.state = AgentStates.IDLE;
     this.memory = null;
-    this.ruleEngine = null;
+    this.ruleEngine = null; // 旧规则引擎（兼容）
+    this.dslRuleEngine = null; // 新的 DSL 规则引擎
     this.intentPlanner = null;
     this.consistencyChecker = null;
     this.rewriter = null;
     this.memoryUpdater = null;
+    this.fileScanner = null; // 文件扫描器
+    this.chapterAnalyzer = null; // 章节分析器
+    this.chapterPlanner = null; // 章节规划器
+    this.chapterFileManager = null; // 章节文件管理器
+    this.coherenceChecker = null; // 连贯性检查器
+    this.pacingController = null; // 节奏控制器
+    this.emotionCurveManager = null; // 情绪曲线管理器
+    this.densityController = null; // 密度控制器
+    this.sceneStructurePlanner = null; // 场景结构规划器
     this.currentTask = null;
     this.executionLog = [];
     this.initialized = false;
+    this.performanceOptimizer = new PerformanceOptimizer(); // 性能优化器
+    this.reportGenerator = new ReportGenerator(); // 报告生成器
+    this.statistics = {
+      totalTasks: 0,
+      successfulTasks: 0,
+      failedTasks: 0,
+      averageExecutionTime: 0,
+      totalExecutionTime: 0
+    };
   }
 
   /**
@@ -37,13 +72,32 @@ class AgentOrchestrator {
       this.memory = new MemoryManager(this.workspaceRoot);
       await this.memory.initialize();
 
-      // 初始化规则引擎
+      // 初始化规则引擎（兼容）
       this.ruleEngine = new RuleEngine(this.workspaceRoot);
       await this.ruleEngine.loadRules();
 
+      // 初始化 DSL 规则引擎
+      this.dslRuleEngine = new DSLRuleEngine(this.workspaceRoot);
+      const appPath = app.getAppPath();
+      const defaultRulesPath = path.join(appPath, 'rules/default-dsl-rules.json');
+      const customRulesPath = path.join(this.workspaceRoot, 'rules/dsl-rules.json');
+      await this.dslRuleEngine.loadRules(defaultRulesPath, customRulesPath);
+
+      // 初始化文件系统组件
+      this.fileScanner = new FileScanner(this.workspaceRoot);
+      this.chapterFileManager = new ChapterFileManager(this.workspaceRoot);
+      await this.chapterFileManager.initialize();
+
       // 初始化各个 Agent 模块
       this.intentPlanner = new IntentPlanner();
-      this.consistencyChecker = new ConsistencyChecker(this.ruleEngine);
+      this.chapterAnalyzer = new ChapterAnalyzer(this.memory);
+      this.chapterPlanner = new ChapterPlanner(this.memory);
+      this.coherenceChecker = new CoherenceChecker(this.dslRuleEngine, this.memory);
+      this.pacingController = new PacingController();
+      this.emotionCurveManager = new EmotionCurveManager();
+      this.densityController = new DensityController();
+      this.sceneStructurePlanner = new SceneStructurePlanner();
+      this.consistencyChecker = new ConsistencyChecker(this.dslRuleEngine); // 使用 DSL 规则引擎
       this.rewriter = new RewriteAgent();
       this.memoryUpdater = new MemoryUpdater(this.memory);
 
@@ -71,35 +125,232 @@ class AgentOrchestrator {
       throw new Error('Agent 未初始化，请先调用 initialize()');
     }
 
+    const startTime = Date.now();
+    this.statistics.totalTasks++;
+
     this.currentTask = {
       id: `task_${Date.now()}`,
       request: request.userRequest,
       startedAt: new Date().toISOString(),
-      status: 'running'
+      status: 'running',
+      steps: []
     };
 
     this.log('Task started', { taskId: this.currentTask.id, request: request.userRequest });
 
     try {
+      // 使用错误处理包装执行
+      return await ErrorHandler.withRetry(
+        async () => {
+          return await this.executeInternal(request, llmCaller, startTime);
+        },
+        {
+          maxRetries: 2,
+          retryDelay: 1000,
+          shouldRetry: (error) => ErrorHandler.isRecoverable(error),
+          onRetry: (attempt, error) => {
+            this.log('Retrying task', { attempt, error: error.message });
+          }
+        }
+      );
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      this.statistics.failedTasks++;
+      this.updateStatistics(executionTime);
+
+      const errorInfo = ErrorHandler.handleError(error, {
+        taskId: this.currentTask.id,
+        request: request.userRequest
+      });
+
+      this.currentTask.status = 'failed';
+      this.currentTask.error = errorInfo;
+      this.currentTask.executionTime = executionTime;
+
+      this.log('Task failed', errorInfo);
+      throw errorInfo;
+    }
+  }
+
+  /**
+   * 内部执行方法（实际执行逻辑）
+   */
+  async executeInternal(request, llmCaller, startTime) {
       // 状态 1: 加载上下文
       this.setState(AgentStates.LOAD_CONTEXT);
       const context = await this.loadContext(request);
       this.log('Context loaded', { contextSize: JSON.stringify(context).length });
 
-      // 状态 2: 规划意图
+      // 状态 1.5: 扫描章节文件（新增）
+      this.setState(AgentStates.LOAD_CONTEXT);
+      const scanResult = await this.scanChapters();
+      this.log('Chapters scanned', { totalChapters: scanResult.totalChapters, latestChapter: scanResult.latestChapter });
+
+      // 状态 1.6: 分析已有章节（续写模式，新增）
+      let previousAnalyses = [];
+      let chapterPlan = null;
+      const targetChapter = this.extractChapterNumber(request.userRequest);
+      
+      if (targetChapter && targetChapter > 1) {
+        this.setState(AgentStates.LOAD_CONTEXT);
+        
+        // 使用缓存优化
+        const analysisCacheKey = this.performanceOptimizer.generateCacheKey(
+          'chapter_analysis',
+          targetChapter,
+          scanResult.latestChapter
+        );
+        
+        let cachedAnalyses = this.performanceOptimizer.getCached(analysisCacheKey);
+        if (!cachedAnalyses) {
+          previousAnalyses = await ErrorHandler.withRetry(
+            () => this.analyzePreviousChapters(targetChapter, llmCaller),
+            {
+              maxRetries: 2,
+              shouldRetry: (error) => error.type === 'llm_error' || error.type === 'network_error'
+            }
+          );
+          this.performanceOptimizer.cacheResult(analysisCacheKey, previousAnalyses);
+        } else {
+          previousAnalyses = cachedAnalyses;
+          this.log('Using cached chapter analyses', { count: previousAnalyses.length });
+        }
+        
+        this.log('Previous chapters analyzed', { count: previousAnalyses.length });
+
+        // 状态 1.7: 规划章节（新增）
+        this.setState(AgentStates.PLAN_INTENT);
+        chapterPlan = await ErrorHandler.withRetry(
+          () => this.planChapter(targetChapter, previousAnalyses, request, context, llmCaller),
+          {
+            maxRetries: 2,
+            shouldRetry: (error) => error.type === 'llm_error'
+          }
+        );
+        this.log('Chapter planned', { chapterType: chapterPlan?.chapter_structure?.type });
+      }
+
+      // 状态 2: 规划意图（基于章节规划）
       this.setState(AgentStates.PLAN_INTENT);
-      const intent = await this.planIntent(request, context, llmCaller);
+      const intent = await this.planIntent(request, context, llmCaller, chapterPlan);
       this.log('Intent planned', { intent });
 
-      // 状态 3: 生成初稿
+      // 状态 3: 生成初稿（支持章节规划控制）
       this.setState(AgentStates.WRITE_DRAFT);
-      const draft = await this.writeDraft(intent, context, llmCaller);
+      this.addStep('write_draft', '生成初稿');
+      const draft = await ErrorHandler.withTimeout(
+        this.writeDraft(intent, context, llmCaller, chapterPlan),
+        6000000, // 10 分钟超时
+        '生成初稿超时'
+      );
       this.log('Draft generated', { draftLength: draft.text?.length || 0 });
 
-      // 状态 4: 一致性校验
+      // 状态 4: 连贯性检查（新增）
       this.setState(AgentStates.CHECK_CONSISTENCY);
-      let checkResult = await this.checkConsistency(draft.text, intent, context, llmCaller);
+      this.addStep('check_coherence', '连贯性检查');
+      let coherenceResult = await ErrorHandler.withTimeout(
+        this.checkCoherence(draft.text, previousAnalyses, chapterPlan, llmCaller),
+        6000000, // 10 分钟超时
+        '连贯性检查超时'
+      );
+      this.log('Coherence checked', { 
+        overall: coherenceResult.overall_coherence,
+        score: coherenceResult.overall_score 
+      });
+
+      // 状态 4.5: 节奏、情绪、密度分析（新增，并行处理）
+      this.addStep('curve_analysis', '曲线分析');
+      const [pacingAnalysis, emotionAnalysis, densityAnalysis] = await this.performanceOptimizer.parallel([
+        () => this.pacingController.analyzePacing(draft.text),
+        () => this.emotionCurveManager.analyzeEmotionCurve(draft.text),
+        () => this.densityController.analyzeDensity(draft.text)
+      ], {
+        maxConcurrency: 3,
+        onProgress: (current, total) => {
+          this.log('Curve analysis progress', { current, total });
+        }
+      });
+
+      // 与目标曲线对比
+      let pacingComparison = null;
+      let emotionComparison = null;
+      let densityComparison = null;
+
+      if (chapterPlan && chapterPlan.success) {
+        if (chapterPlan.pacing_curve) {
+          pacingComparison = this.pacingController.compareWithTarget(
+            pacingAnalysis,
+            chapterPlan.pacing_curve
+          );
+        }
+        if (chapterPlan.emotion_curve) {
+          emotionComparison = this.emotionCurveManager.compareWithTarget(
+            emotionAnalysis,
+            chapterPlan.emotion_curve
+          );
+        }
+        if (chapterPlan.density_curve) {
+          densityComparison = this.densityController.compareWithTarget(
+            densityAnalysis,
+            chapterPlan.density_curve
+          );
+        }
+      }
+
+      this.log('Curve analysis completed', {
+        pacing: pacingAnalysis.overall,
+        emotion: emotionAnalysis.end.toFixed(2),
+        density: densityAnalysis.overall
+      });
+
+      // 状态 5: 一致性校验（4层架构 + 状态机校验）
+      this.setState(AgentStates.CHECK_CONSISTENCY);
+      this.addStep('check_consistency', '一致性校验');
+      let checkResult = await ErrorHandler.withTimeout(
+        this.checkConsistency(draft.text, intent, context, llmCaller),
+        6000000, // 10 分钟超时
+        '一致性校验超时'
+      );
       this.log('Consistency checked', { status: checkResult.status });
+
+      // 合并连贯性检查结果到一致性检查结果
+      if (coherenceResult.success && coherenceResult.overall_coherence !== 'good') {
+        // 如果有连贯性问题，添加到错误列表
+        if (!checkResult.errors) {
+          checkResult.errors = [];
+        }
+        
+        // 添加连贯性问题
+        if (coherenceResult.plot_coherence.issues.length > 0) {
+          checkResult.errors.push(...coherenceResult.plot_coherence.issues.map(issue => ({
+            type: 'coherence',
+            severity: issue.severity,
+            message: `情节连贯性：${issue.message}`,
+            suggestion: issue.suggestion
+          })));
+        }
+        
+        if (coherenceResult.emotion_coherence.issues.length > 0) {
+          checkResult.errors.push(...coherenceResult.emotion_coherence.issues.map(issue => ({
+            type: 'coherence',
+            severity: issue.severity,
+            message: `情绪连贯性：${issue.message}`,
+            suggestion: issue.suggestion
+          })));
+        }
+
+        // 如果连贯性分数太低，标记为失败
+        if (coherenceResult.overall_score < 60) {
+          checkResult.status = 'fail';
+        }
+      }
+
+      // 状态机校验：检查是否有致命错误
+      const hasFatalError = this.dslRuleEngine.hasFatalError(checkResult.errors || []);
+      if (hasFatalError) {
+        this.log('Fatal error detected', { errorCount: checkResult.errors?.length || 0 });
+        // 致命错误必须修正，不能进入 UPDATE_MEMORY
+      }
 
       let finalText = draft.text;
       let rewriteCount = 0;
@@ -111,6 +362,7 @@ class AgentOrchestrator {
         rewriteCount++;
         this.log('Rewriting', { attempt: rewriteCount, errors: checkResult.errors.length });
 
+        // 使用定向修复（基于规则 ID）
         const rewritten = await this.rewrite(finalText, intent, checkResult.errors, context, llmCaller);
         finalText = rewritten.text;
 
@@ -119,45 +371,107 @@ class AgentOrchestrator {
         checkResult = await this.checkConsistency(finalText, intent, context, llmCaller);
         this.log('Re-checked after rewrite', { status: checkResult.status });
 
-        if (checkResult.status === 'pass') {
+        // 状态机校验：如果仍有致命错误，继续重写
+        const stillHasFatal = this.dslRuleEngine.hasFatalError(checkResult.errors || []);
+        if (checkResult.status === 'pass' && !stillHasFatal) {
           break;
         }
       }
 
-      // 状态 5: 更新记忆
-      if (checkResult.status === 'pass') {
+      // 状态 5: 更新记忆（只有通过校验才能进入）
+      // 模型永远不能直接进入 UPDATE_MEMORY，必须通过状态机校验
+      const finalHasFatal = this.dslRuleEngine.hasFatalError(checkResult.errors || []);
+      const finalHasError = this.dslRuleEngine.hasError(checkResult.errors || []);
+      
+      if (checkResult.status === 'pass' && !finalHasFatal && !finalHasError) {
         this.setState(AgentStates.UPDATE_MEMORY);
         await this.updateMemory(finalText, request, context, llmCaller);
         this.log('Memory updated');
+      } else {
+        this.log('Memory update skipped', { 
+          reason: finalHasFatal ? 'fatal_error' : finalHasError ? 'error' : 'check_failed'
+        });
       }
 
       // 状态 6: 完成
+      const executionTime = Date.now() - startTime;
+      this.statistics.successfulTasks++;
+      this.updateStatistics(executionTime);
+
       this.setState(AgentStates.DONE);
       this.currentTask.status = 'completed';
       this.currentTask.completedAt = new Date().toISOString();
+      this.currentTask.executionTime = executionTime;
 
-      return {
+      const result = {
         success: true,
         text: finalText,
         intent,
         checkResult,
+        coherenceResult,
+        pacingAnalysis,
+        emotionAnalysis,
+        densityAnalysis,
+        pacingComparison,
+        emotionComparison,
+        densityComparison,
+        chapterPlan,
         rewriteCount,
-        executionLog: this.executionLog.slice(-10) // 返回最后 10 条日志
+        executionTime,
+        statistics: this.getTaskStatistics(),
+        executionLog: this.executionLog.slice(-10), // 返回最后 10 条日志
+        report: this.reportGenerator.generateExecutionReport(this.currentTask, {
+          success: true,
+          text: finalText,
+          checkResult,
+          coherenceResult,
+          pacingAnalysis,
+          emotionAnalysis,
+          densityAnalysis,
+          pacingComparison,
+          emotionComparison,
+          densityComparison,
+          chapterPlan,
+          rewriteCount,
+          executionTime
+        })
       };
 
-    } catch (error) {
-      console.error('❌ Agent 执行失败:', error);
-      this.setState(AgentStates.ERROR);
-      this.currentTask.status = 'failed';
-      this.currentTask.error = error.message;
-      this.log('Task failed', { error: error.message });
+      this.log('Task completed', { 
+        executionTime: `${(executionTime / 1000).toFixed(2)}s`,
+        rewriteCount,
+        finalStatus: checkResult.status
+      });
 
-      return {
-        success: false,
-        error: error.message,
-        executionLog: this.executionLog.slice(-10)
-      };
+      // 生成可读报告（用于日志）
+      const readableReport = this.reportGenerator.generateReadableReport(result.report);
+      console.log(readableReport);
+
+      return result;
+  }
+
+  /**
+   * 更新统计信息
+   */
+  updateStatistics(executionTime) {
+    this.statistics.totalExecutionTime += executionTime;
+    const completedTasks = this.statistics.successfulTasks + this.statistics.failedTasks;
+    if (completedTasks > 0) {
+      this.statistics.averageExecutionTime = 
+        this.statistics.totalExecutionTime / completedTasks;
     }
+  }
+
+  /**
+   * 获取任务统计
+   */
+  getTaskStatistics() {
+    return {
+      ...this.statistics,
+      successRate: this.statistics.totalTasks > 0
+        ? (this.statistics.successfulTasks / this.statistics.totalTasks * 100).toFixed(2) + '%'
+        : '0%'
+    };
   }
 
   /**
@@ -175,22 +489,229 @@ class AgentOrchestrator {
   }
 
   /**
-   * 状态 2: 规划意图
+   * 扫描章节文件
    */
-  async planIntent(request, context, llmCaller) {
-    return await this.intentPlanner.plan(request.userRequest, context, llmCaller);
+  async scanChapters() {
+    try {
+      const result = await this.fileScanner.scanChapterFiles();
+      
+      // 更新章节文件管理器
+      if (result.success) {
+        await this.chapterFileManager.updateMapping(result.chapterMapping);
+      }
+
+      return result;
+    } catch (error) {
+      console.error('扫描章节文件失败:', error);
+      return {
+        success: false,
+        totalChapters: 0,
+        latestChapter: 0,
+        chapterMapping: {}
+      };
+    }
   }
 
   /**
-   * 状态 3: 生成初稿
+   * 分析已有章节（续写模式）
    */
-  async writeDraft(intent, context, llmCaller) {
+  async analyzePreviousChapters(targetChapter, llmCaller) {
+    try {
+      // 获取最近 N 章（默认 3 章）
+      const recentCount = 3;
+      const startChapter = Math.max(1, targetChapter - recentCount);
+      const chapterNumbers = [];
+      
+      for (let i = startChapter; i < targetChapter; i++) {
+        if (this.fileScanner.hasChapter(i)) {
+          chapterNumbers.push(i);
+        }
+      }
+
+      if (chapterNumbers.length === 0) {
+        return [];
+      }
+
+      console.log(`📊 分析前 ${chapterNumbers.length} 章：第${chapterNumbers.join('、')}章`);
+
+      // 并行处理：先检查缓存，再分析需要更新的章节
+      const analysisTasks = chapterNumbers.map(chapterNum => async () => {
+        // 检查是否需要更新
+        const needsUpdate = await this.chapterFileManager.needsAnalysisUpdate(chapterNum);
+        
+        if (!needsUpdate) {
+          // 使用缓存
+          const cached = await this.chapterFileManager.loadAnalysis(chapterNum);
+          if (cached) {
+            return cached;
+          }
+        }
+
+        // 重新分析
+        const content = await this.fileScanner.readChapterContent(chapterNum);
+        if (content) {
+          const analysis = await this.chapterAnalyzer.analyzeChapter(chapterNum, content, llmCaller);
+          if (analysis.success) {
+            // 保存分析结果
+            await this.chapterFileManager.saveAnalysis(chapterNum, analysis);
+            return analysis;
+          }
+        }
+        return null;
+      });
+
+      // 并行执行（限制并发数）
+      const analyses = await this.performanceOptimizer.parallel(analysisTasks, {
+        maxConcurrency: 2, // 限制并发，避免过多 LLM 调用
+        onProgress: (current, total) => {
+          this.log('Chapter analysis progress', { current, total });
+        }
+      });
+
+      // 过滤 null 并排序
+      return analyses.filter(a => a !== null).sort((a, b) => a.chapterNumber - b.chapterNumber);
+    } catch (error) {
+      console.error('分析已有章节失败:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 规划章节
+   */
+  async planChapter(targetChapter, previousAnalyses, request, context, llmCaller) {
+    try {
+      const plan = await this.chapterPlanner.planChapterForContinuation(
+        targetChapter,
+        previousAnalyses,
+        request,
+        context,
+        llmCaller
+      );
+
+      if (plan.success) {
+        // 保存章节规划
+        await this.chapterFileManager.saveAnalysis(targetChapter, {
+          ...plan,
+          isPlan: true // 标记为规划，不是分析
+        });
+      }
+
+      return plan;
+    } catch (error) {
+      console.error('规划章节失败:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 从用户请求中提取章节编号
+   */
+  extractChapterNumber(userRequest) {
+    if (!userRequest) return null;
+
+    // 匹配 "第X章" 或 "第X-Y章"
+    const match = userRequest.match(/第\s*(\d+)(?:[-到]\s*(\d+))?\s*章/);
+    if (match) {
+      return parseInt(match[1]);
+    }
+
+    // 匹配 "续写第X章"
+    const continueMatch = userRequest.match(/续写.*?第\s*(\d+)\s*章/);
+    if (continueMatch) {
+      return parseInt(continueMatch[1]);
+    }
+
+    return null;
+  }
+
+  /**
+   * 状态 2: 规划意图（支持章节规划）
+   */
+  async planIntent(request, context, llmCaller, chapterPlan = null) {
+    // 如果有章节规划，传递给 Intent Planner
+    const intent = await this.intentPlanner.plan(request.userRequest, context, llmCaller);
+    
+    // 如果有关节规划，增强 Intent
+    if (chapterPlan && chapterPlan.success) {
+      intent.chapter_plan = chapterPlan;
+      // 根据章节规划调整意图
+      if (chapterPlan.emotion_curve) {
+        intent.tone = this.formatEmotionTone(chapterPlan.emotion_curve);
+      }
+      if (chapterPlan.pacing_curve) {
+        intent.writing_guidelines = intent.writing_guidelines || {};
+        intent.writing_guidelines.pace = chapterPlan.pacing_curve.overall;
+      }
+    }
+
+    return intent;
+  }
+
+  /**
+   * 格式化情绪基调
+   */
+  formatEmotionTone(emotionCurve) {
+    const start = emotionCurve.start || 0.5;
+    const peak = emotionCurve.peak || 0.5;
+    const end = emotionCurve.end || 0.5;
+
+    const emotions = [];
+    if (start < 0.4) emotions.push('平静');
+    else if (start < 0.6) emotions.push('紧张');
+    else if (start < 0.8) emotions.push('兴奋');
+    else emotions.push('激昂');
+
+    if (peak > start + 0.2) {
+      emotions.push('→ 爆发');
+    }
+
+    if (end < peak - 0.2) {
+      emotions.push('→ 平静');
+    }
+
+    return emotions.join(' ');
+  }
+
+  /**
+   * 添加执行步骤
+   */
+  addStep(name, description) {
+    if (this.currentTask && this.currentTask.steps) {
+      this.currentTask.steps.push({
+        name,
+        description,
+        timestamp: new Date().toISOString(),
+        state: this.state
+      });
+    }
+  }
+
+  /**
+   * 状态 3: 生成初稿（支持章节规划控制）
+   */
+  async writeDraft(intent, context, llmCaller, chapterPlan = null) {
     console.log('📝 开始生成初稿...');
 
-    const systemPrompt = `你是一个专业的小说写作助手，负责根据写作意图生成高质量的小说文本。
+    // 构建系统提示词（根据是否有章节规划调整）
+    let systemPrompt = `你是一个专业的小说写作助手，负责根据写作意图生成高质量的小说文本。
 
 # 核心任务
-根据提供的写作意图（Intent）和上下文信息，生成符合要求的小说文本。
+根据提供的写作意图（Intent）和上下文信息，生成符合要求的小说文本。`;
+
+    if (chapterPlan && chapterPlan.success) {
+      systemPrompt += `
+
+# 章节规划要求（重要）
+你必须严格按照章节规划生成文本：
+1. **场景结构**：按照规划的场景结构（opening/development/climax/resolution）组织文本
+2. **情绪曲线**：文本的情绪变化必须符合规划的情绪曲线
+3. **节奏控制**：文本的节奏必须符合规划的节奏曲线
+4. **密度控制**：信息密度必须符合规划的密度曲线
+5. **情节节点**：必须在指定位置包含规划的情节节点`;
+    }
+
+    systemPrompt += `
 
 # 写作要求
 1. **严格遵守意图约束**：必须遵守 intent.constraints 中的所有禁止和必需项
@@ -205,7 +726,8 @@ class AgentOrchestrator {
 - 长度根据需求确定，通常 500-2000 字
 - 保持段落结构，使用适当的换行`;
 
-    const userPrompt = `# 写作意图
+    // 构建用户提示词
+    let userPrompt = `# 写作意图
 ${JSON.stringify(intent, null, 2)}
 
 # 上下文信息
@@ -214,10 +736,33 @@ ${JSON.stringify({
   characters: context.characters || [],
   plot_context: context.plot_context || [],
   current_chapter: context.current_chapter || '未知章节'
+}, null, 2)}`;
+
+    // 如果有关节规划，添加章节规划信息
+    if (chapterPlan && chapterPlan.success) {
+      userPrompt += `
+
+# 章节规划（必须严格遵守）
+${JSON.stringify({
+  chapter_structure: chapterPlan.chapter_structure,
+  emotion_curve: chapterPlan.emotion_curve,
+  pacing_curve: chapterPlan.pacing_curve,
+  density_curve: chapterPlan.density_curve,
+  coherence_links: chapterPlan.coherence_links
 }, null, 2)}
 
+## 章节规划说明
+- **场景结构**：必须按照 ${chapterPlan.chapter_structure?.scenes?.length || 0} 个场景的结构组织文本
+- **情绪曲线**：开头情绪 ${chapterPlan.emotion_curve?.start?.toFixed(2) || 0.5}，高潮 ${chapterPlan.emotion_curve?.peak?.toFixed(2) || 0.5}，结尾 ${chapterPlan.emotion_curve?.end?.toFixed(2) || 0.5}
+- **节奏控制**：整体节奏 ${chapterPlan.pacing_curve?.overall || 'medium'}
+- **密度控制**：整体密度 ${chapterPlan.density_curve?.overall || 'medium'}
+- **连贯性**：${chapterPlan.coherence_links?.previous_chapter?.connection_points?.join('；') || '无特殊要求'}`;
+    }
+
+    userPrompt += `
+
 # 任务
-请根据上述意图和上下文，生成符合要求的小说文本。`;
+请根据上述意图和上下文${chapterPlan && chapterPlan.success ? '，严格按照章节规划' : ''}，生成符合要求的小说文本。`;
 
     try {
       const result = await llmCaller({
@@ -263,7 +808,8 @@ ${JSON.stringify({
         text,
         generatedAt: new Date().toISOString(),
         intent,
-        context
+        context,
+        chapterPlan: chapterPlan || null
       };
     } catch (error) {
       console.error('❌ 生成初稿失败:', error);
@@ -272,7 +818,19 @@ ${JSON.stringify({
   }
 
   /**
-   * 状态 4: 一致性校验
+   * 状态 4: 连贯性检查
+   */
+  async checkCoherence(text, previousAnalyses, chapterPlan, llmCaller) {
+    return await this.coherenceChecker.checkCoherence(
+      text,
+      previousAnalyses,
+      chapterPlan,
+      llmCaller
+    );
+  }
+
+  /**
+   * 状态 5: 一致性校验
    */
   async checkConsistency(text, intent, context, llmCaller) {
     return await this.consistencyChecker.check(text, intent, context, llmCaller);

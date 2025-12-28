@@ -204,7 +204,7 @@ export function useAgent(
       task.changes = changes;
       task.status = 'completed';
 
-      // 添加成功消息
+      // 添加成功消息（不自动应用变更，需要用户确认）
       const successMsg: AgentMessage = {
         id: nextAgentMsgId++,
         role: 'assistant',
@@ -215,8 +215,9 @@ export function useAgent(
           `- 重写次数：${result.rewriteCount || 0}\n` +
           `- 生成文本长度：${result.text?.length || 0} 字符\n\n` +
           (result.checkResult?.status === 'pass' 
-            ? '✅ 文本已通过一致性校验，符合世界观和人物设定。'
-            : '⚠️ 文本未通过一致性校验，请检查。'),
+            ? '✅ 文本已通过一致性校验，符合世界观和人物设定。\n\n'
+            : '⚠️ 文本未通过一致性校验，请检查。\n\n') +
+          `📝 提示：请点击"应用全部变更"按钮查看预览并确认应用变更。`,
         timestamp: Date.now()
       };
       agentMessages.value.push(successMsg);
@@ -354,12 +355,12 @@ export function useAgent(
   };
 
   /**
-   * 应用所有变更
+   * 应用所有变更（需要确认）
    */
-  const applyAllChanges = async () => {
+  const applyAllChanges = async (): Promise<boolean> => {
     if (!currentTask.value) {
       showAlert('没有待应用的变更', '提示', 'warning');
-      return;
+      return false;
     }
 
     try {
@@ -369,9 +370,11 @@ export function useAgent(
         }
       }
       showAlert('所有变更已应用', '成功', 'info');
+      return true;
     } catch (error: any) {
       console.error('应用所有变更失败:', error);
       showAlert(error.message, '应用变更失败', 'danger');
+      return false;
     }
   };
 

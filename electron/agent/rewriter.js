@@ -114,28 +114,36 @@ class RewriteAgent {
   }
 
   /**
-   * 执行重写
+   * 执行重写（定向修复版）
    * @param {string} originalText - 原文
    * @param {Object} intent - 写作意图
-   * @param {Array} errors - 错误列表
+   * @param {Array} errors - 错误列表（包含 rule_id）
    * @param {Object} context - 记忆上下文
    * @param {Function} llmCaller - LLM 调用函数
    */
   async rewrite(originalText, intent, errors, context, llmCaller) {
     try {
-      console.log(`🔧 开始重写... (发现 ${errors.length} 个错误)`);
+      console.log(`🔧 开始定向修复... (发现 ${errors.length} 个错误)`);
 
       // 如果没有错误，直接返回原文
       if (!errors || errors.length === 0) {
         return {
           text: originalText,
           changes: [],
-          explanation: '未发现需要修正的错误'
+          explanation: '未发现需要修正的错误',
+          rewrite_reason: [],
+          rewrite_scope: 'none'
         };
       }
 
-      // 构建重写提示词
-      const userPrompt = this.buildRewritePrompt(originalText, intent, errors, context);
+      // 构建重写原因（基于规则 ID）
+      const rewriteReason = this.buildRewriteReason(errors);
+      
+      // 确定修复范围（基于错误位置）
+      const rewriteScope = this.determineRewriteScope(errors, originalText);
+
+      // 构建重写提示词（包含定向修复信息）
+      const userPrompt = this.buildRewritePrompt(originalText, intent, errors, context, rewriteReason, rewriteScope);
 
       // 调用 LLM 重写
       const result = await llmCaller({
@@ -152,7 +160,14 @@ class RewriteAgent {
       // 解析重写结果
       const rewritten = this.parseRewriteResult(result.response, originalText);
 
-      console.log(`✅ 重写完成 - 修改了 ${rewritten.changes.length} 处`);
+      // 添加定向修复信息
+      rewritten.rewrite_reason = rewriteReason;
+      rewritten.rewrite_scope = rewriteScope;
+      rewritten.rewrite_goal = this.buildRewriteGoal(rewriteReason, errors);
+
+      console.log(`✅ 定向修复完成 - 修改了 ${rewritten.changes.length} 处`);
+      console.log(`   修复范围: ${rewriteScope}`);
+      console.log(`   涉及规则: ${rewriteReason.map(r => r.rule).join(', ')}`);
       return rewritten;
 
     } catch (error) {
@@ -163,15 +178,85 @@ class RewriteAgent {
         text: originalText,
         changes: [],
         explanation: '重写失败: ' + error.message,
-        error: error.message
+        error: error.message,
+        rewrite_reason: [],
+        rewrite_scope: 'none'
       };
     }
   }
 
   /**
-   * 构建重写提示词
+   * 构建重写原因（基于规则 ID）
    */
-  buildRewritePrompt(originalText, intent, errors, context) {
+  buildRewriteReason(errors) {
+    const reasons = [];
+    const ruleMap = new Map();
+
+    for (const error of errors) {
+      const ruleId = error.rule_id || error.type || 'unknown';
+      if (!ruleMap.has(ruleId)) {
+        ruleMap.set(ruleId, {
+          rule: ruleId,
+          message: error.message || '需要修正',
+          count: 0
+        });
+      }
+      ruleMap.get(ruleId).count++;
+    }
+
+    for (const [ruleId, info] of ruleMap) {
+      reasons.push({
+        rule: ruleId,
+        message: info.message,
+        count: info.count
+      });
+    }
+
+    return reasons;
+  }
+
+  /**
+   * 确定修复范围
+   */
+  determineRewriteScope(errors, text) {
+    // 简化处理：根据错误位置确定范围
+    // 实际可以更智能地分析文本结构
+    
+    const locations = errors
+      .map(e => e.location)
+      .filter(loc => loc && loc !== '整体' && loc !== '文本中');
+    
+    if (locations.length === 0) {
+      return 'full_text'; // 全文修复
+    }
+
+    // 如果错误集中在某个段落，返回段落范围
+    const paragraphMatches = locations.filter(loc => loc.includes('段'));
+    if (paragraphMatches.length > 0) {
+      const paragraphNums = paragraphMatches
+        .map(loc => parseInt(loc.match(/\d+/)?.[0] || '0'))
+        .filter(n => n > 0);
+      
+      if (paragraphNums.length > 0) {
+        const min = Math.min(...paragraphNums);
+        const max = Math.max(...paragraphNums);
+        return `paragraph_${min}_${max}`;
+      }
+    }
+
+    // 如果错误集中在某个场景
+    const sceneMatches = locations.filter(loc => loc.includes('场景') || loc.includes('scene'));
+    if (sceneMatches.length > 0) {
+      return sceneMatches[0];
+    }
+
+    return 'partial'; // 部分修复
+  }
+
+  /**
+   * 构建重写提示词（定向修复版）
+   */
+  buildRewritePrompt(originalText, intent, errors, context, rewriteReason, rewriteScope) {
     let prompt = `# 原文\n${originalText}\n\n`;
 
     // 添加写作意图
@@ -191,14 +276,31 @@ class RewriteAgent {
       prompt += '\n';
     }
 
+    // 添加重写原因（基于规则）
+    if (rewriteReason && rewriteReason.length > 0) {
+      prompt += `# 重写原因（基于规则）\n`;
+      for (const reason of rewriteReason) {
+        prompt += `- 规则 ${reason.rule}: ${reason.message} (${reason.count} 处)\n`;
+      }
+      prompt += '\n';
+    }
+
+    // 添加修复范围
+    if (rewriteScope) {
+      prompt += `# 修复范围\n`;
+      prompt += `范围：${rewriteScope}\n`;
+      prompt += `说明：请只修复指定范围内的错误，其他部分保持不变\n\n`;
+    }
+
     // 添加错误列表
     prompt += `# 需要修正的错误\n`;
     for (let i = 0; i < errors.length; i++) {
       const error = errors[i];
-      prompt += `\n${i + 1}. [${error.severity.toUpperCase()}] ${error.type}\n`;
-      prompt += `   位置：${error.location}\n`;
+      prompt += `\n${i + 1}. [${(error.severity || error.level || 'medium').toUpperCase()}] ${error.type || error.rule_id || 'unknown'}\n`;
+      prompt += `   规则：${error.rule_id || 'N/A'}\n`;
+      prompt += `   位置：${error.location || '未指定'}\n`;
       prompt += `   问题：${error.message}\n`;
-      prompt += `   建议：${error.suggestion}\n`;
+      prompt += `   建议：${error.suggestion || '请修正'}\n`;
     }
     prompt += '\n';
 
@@ -227,6 +329,34 @@ class RewriteAgent {
     prompt += `# 任务\n请根据上述错误列表，对原文进行精确重写，只修正错误部分，其他内容保持不变。返回纯 JSON 格式。`;
 
     return prompt;
+  }
+
+  /**
+   * 构建重写目标
+   */
+  buildRewriteGoal(rewriteReason, errors) {
+    if (!rewriteReason || rewriteReason.length === 0) {
+      return '修正所有错误';
+    }
+
+    const goals = [];
+    for (const reason of rewriteReason) {
+      if (reason.rule === 'NO_REVIVE') {
+        goals.push('保留紧张感，但移除复活情节');
+      } else if (reason.rule === 'NO_TIME_REVERSAL') {
+        goals.push('移除时间倒流情节');
+      } else if (reason.rule === 'CHARACTER_TRAIT_LOCK') {
+        goals.push('调整角色行为以符合性格设定');
+      } else if (reason.rule === 'INTENT_CONTRACT') {
+        goals.push('确保文本满足写作意图约束');
+      } else if (reason.rule === 'ARC_MUST_PROGRESS') {
+        goals.push('增加情节推进或事件');
+      } else {
+        goals.push(`修正 ${reason.rule} 相关错误`);
+      }
+    }
+
+    return goals.join('；');
   }
 
   /**

@@ -60,16 +60,17 @@ class IntelligentExtractor {
 
       const {
         chapterBatchSize = 5,
-        maxChapters = 0
+        maxChapters = 0,
+        forceRescan = false
       } = options;
 
       // 1. 提取设定文件信息
       this.reportProgress(0, 100, '提取设定文件...');
-      await this.extractSettings();
+      await this.extractSettings(forceRescan);
 
       // 2. 提取章节文件信息（分批处理）
       this.reportProgress(50, 100, '提取章节文件...');
-      const chapterResult = await this.extractChapters(chapterBatchSize, maxChapters);
+      const chapterResult = await this.extractChapters(chapterBatchSize, maxChapters, forceRescan);
 
       this.reportProgress(100, 100, '提取完成');
 
@@ -91,8 +92,9 @@ class IntelligentExtractor {
 
   /**
    * 提取设定文件信息（支持增量更新）
+   * @param {boolean} forceRescan - 是否强制重新扫描（忽略文件状态）
    */
-  async extractSettings() {
+  async extractSettings(forceRescan = false) {
     const settingContents = [];
     const filesToProcess = [];
 
@@ -100,7 +102,7 @@ class IntelligentExtractor {
     for (const filename of this.settingFiles) {
       const filepath = path.join(this.workspaceRoot, filename);
       if (fs.existsSync(filepath)) {
-        if (this.fileStateManager.needsProcessing(filepath)) {
+        if (forceRescan || this.fileStateManager.needsProcessing(filepath)) {
           filesToProcess.push({ filename, filepath });
         } else {
           console.log(`⏭️ 跳过未修改的设定文件: ${filename}`);
@@ -340,19 +342,77 @@ ${content}
   }
 
   /**
+   * 递归扫描目录，查找章节文件
+   * @param {string} dir - 目录路径
+   * @param {Array} fileList - 文件列表（输出）
+   */
+  scanDirectory(dir, fileList = []) {
+    try {
+      const files = fs.readdirSync(dir);
+      
+      for (const file of files) {
+        const filepath = path.join(dir, file);
+        const stat = fs.statSync(filepath);
+        
+        // 跳过隐藏文件和目录
+        if (file.startsWith('.')) {
+          continue;
+        }
+        
+        // 跳过 node_modules 等常见目录
+        if (stat.isDirectory()) {
+          const dirName = path.basename(filepath);
+          if (['node_modules', '.git', '.vscode', '.cursor', 'node_modules', 'dist', 'build'].includes(dirName)) {
+            continue;
+          }
+          // 递归扫描子目录
+          this.scanDirectory(filepath, fileList);
+        } else if (stat.isFile()) {
+          // 支持多种文件格式：.txt, .md
+          const ext = path.extname(file).toLowerCase();
+          if ((ext === '.txt' || ext === '.md') && /第.*?章/i.test(file)) {
+            fileList.push({
+              filename: file,
+              filepath: filepath,
+              relativePath: path.relative(this.workspaceRoot, filepath)
+            });
+          }
+        }
+      }
+      
+      return fileList;
+    } catch (error) {
+      console.warn(`⚠️ 扫描目录失败: ${dir}`, error.message);
+      return fileList;
+    }
+  }
+
+  /**
    * 提取章节文件信息（支持分批处理和增量更新）
    * @param {number} batchSize - 每批处理的文件数
    * @param {number} maxFiles - 最大处理文件数（0表示全部）
+   * @param {boolean} forceRescan - 是否强制重新扫描（忽略文件状态）
    */
-  async extractChapters(batchSize = 5, maxFiles = 0) {
+  async extractChapters(batchSize = 5, maxFiles = 0, forceRescan = false) {
     try {
-      // 扫描章节文件
-      const files = fs.readdirSync(this.workspaceRoot);
-      let chapterFiles = files.filter(f => {
-        return /\.txt$/i.test(f) && /第.*?章/i.test(f);
-      }).sort();
-
-      if (chapterFiles.length === 0) {
+      // 递归扫描章节文件（支持子目录）
+      console.log('🔍 开始扫描章节文件（递归扫描）...');
+      const allFiles = this.scanDirectory(this.workspaceRoot);
+      
+      // 按文件名排序
+      allFiles.sort((a, b) => {
+        // 提取章节号进行排序
+        const matchA = a.filename.match(/第(\d+)/i);
+        const matchB = b.filename.match(/第(\d+)/i);
+        if (matchA && matchB) {
+          return parseInt(matchA[1]) - parseInt(matchB[1]);
+        }
+        return a.filename.localeCompare(b.filename);
+      });
+      
+      console.log(`📚 扫描到 ${allFiles.length} 个章节文件`);
+      
+      if (allFiles.length === 0) {
         console.log('ℹ️ 未找到章节文件');
         return { processed: 0, total: 0, skipped: 0 };
       }
@@ -361,12 +421,11 @@ ${content}
       const filesToProcess = [];
       const skippedFiles = [];
 
-      for (const filename of chapterFiles) {
-        const filepath = path.join(this.workspaceRoot, filename);
-        if (this.fileStateManager.needsProcessing(filepath)) {
-          filesToProcess.push({ filename, filepath });
+      for (const fileInfo of allFiles) {
+        if (forceRescan || this.fileStateManager.needsProcessing(fileInfo.filepath)) {
+          filesToProcess.push(fileInfo);
         } else {
-          skippedFiles.push(filename);
+          skippedFiles.push(fileInfo.filename);
         }
       }
 
@@ -376,7 +435,7 @@ ${content}
 
       if (filesToProcess.length === 0) {
         console.log('ℹ️ 所有章节文件都是最新的，无需重新提取');
-        return { processed: 0, total: chapterFiles.length, skipped: skippedFiles.length };
+        return { processed: 0, total: allFiles.length, skipped: skippedFiles.length };
       }
 
       // 限制处理数量
@@ -384,7 +443,7 @@ ${content}
         ? filesToProcess.slice(0, maxFiles)
         : filesToProcess;
 
-      console.log(`📖 找到 ${chapterFiles.length} 个章节文件，需要处理 ${filesToActuallyProcess.length} 个`);
+      console.log(`📖 找到 ${allFiles.length} 个章节文件，需要处理 ${filesToActuallyProcess.length} 个`);
 
       // 分批处理
       const totalBatches = Math.ceil(filesToActuallyProcess.length / batchSize);
@@ -396,7 +455,8 @@ ${content}
 
         console.log(`📦 处理第 ${batchNumber}/${totalBatches} 批（${batch.length} 个文件）`);
 
-        for (const { filename, filepath } of batch) {
+        for (const fileInfo of batch) {
+          const { filename, filepath } = fileInfo;
           try {
             const content = fs.readFileSync(filepath, 'utf-8');
             
@@ -404,13 +464,13 @@ ${content}
             const chapterMatch = filename.match(/第(\d+)(?:-(\d+))?章/i);
             const startChapter = chapterMatch ? parseInt(chapterMatch[1]) : 0;
             
-            console.log(`📄 处理章节文件: ${filename} (第${startChapter}章)`);
+            console.log(`📄 处理章节文件: ${fileInfo.relativePath || filename} (第${startChapter}章)`);
             
             // 报告进度
             this.reportProgress(
               processedCount + 1,
               filesToActuallyProcess.length,
-              `处理 ${filename}`
+              `处理 ${fileInfo.relativePath || filename}`
             );
             
             // 使用 LLM 提取章节信息
@@ -445,7 +505,7 @@ ${content}
       console.log(`✅ 章节提取完成: 处理了 ${processedCount} 个文件`);
       return {
         processed: processedCount,
-        total: chapterFiles.length,
+        total: allFiles.length,
         skipped: skippedFiles.length
       };
 

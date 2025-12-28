@@ -67,7 +67,26 @@ class MemoryManager {
 
       // 智能提取（使用 LLM 解析文件内容）
       if (this.llmConfig) {
-        await this.intelligentExtract();
+        // 检查是否已有记忆数据
+        const hasMemoryData = this.hasMemoryData();
+        
+        if (hasMemoryData) {
+          console.log('📚 检测到已有记忆数据，使用增量模式（只处理新文件）...');
+          // 已有记忆数据，使用增量模式，只处理新文件或已修改的文件
+          await this.intelligentExtract({
+            forceRescan: false, // 增量模式，不强制扫描
+            chapterBatchSize: 5,
+            maxChapters: 0
+          });
+        } else {
+          console.log('🔄 首次初始化，将扫描所有文件...');
+          // 没有记忆数据，强制扫描所有文件
+          await this.intelligentExtract({
+            forceRescan: true, // 首次初始化，强制扫描所有文件
+            chapterBatchSize: 5,
+            maxChapters: 0
+          });
+        }
       } else {
         console.log('ℹ️ 未配置 LLM，跳过智能提取');
       }
@@ -83,10 +102,97 @@ class MemoryManager {
   }
 
   /**
+   * 检查是否已有记忆数据
+   * @returns {boolean} 如果已有记忆数据返回 true，否则返回 false
+   */
+  hasMemoryData() {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const memoryDir = path.join(this.workspaceRoot, '.novel-agent');
+      
+      // 检查记忆目录是否存在
+      if (!fs.existsSync(memoryDir)) {
+        return false;
+      }
+      
+      // 检查各个记忆文件是否存在且有内容
+      const memoryFiles = [
+        'character-memory.json',
+        'plot-memory.json',
+        'world-memory.json',
+        'foreshadow-memory.json'
+      ];
+      
+      let hasData = false;
+      for (const filename of memoryFiles) {
+        const filepath = path.join(memoryDir, filename);
+        if (fs.existsSync(filepath)) {
+          try {
+            const content = fs.readFileSync(filepath, 'utf-8');
+            const data = JSON.parse(content);
+            
+            // 检查是否有实际数据（不是空对象或默认数据）
+            if (filename === 'character-memory.json') {
+              // 检查是否有角色数据
+              if (data.characters && Object.keys(data.characters).length > 0) {
+                hasData = true;
+                break;
+              }
+            } else if (filename === 'plot-memory.json') {
+              // 检查是否有剧情数据
+              if (data.main_plotline && (
+                data.main_plotline.completed_events?.length > 0 ||
+                data.main_plotline.pending_goals?.length > 0 ||
+                data.main_plotline.current_stage
+              )) {
+                hasData = true;
+                break;
+              }
+            } else if (filename === 'world-memory.json') {
+              // 检查是否有世界观数据
+              if (data.custom_rules?.length > 0 || 
+                  data.world_rules?.cultivation_system ||
+                  data.world_rules?.magic_system) {
+                hasData = true;
+                break;
+              }
+            } else if (filename === 'foreshadow-memory.json') {
+              // 检查是否有伏笔数据
+              if (data.foreshadows?.length > 0) {
+                hasData = true;
+                break;
+              }
+            }
+          } catch (err) {
+            // 文件损坏，忽略
+            continue;
+          }
+        }
+      }
+      
+      return hasData;
+    } catch (error) {
+      console.warn('⚠️ 检查记忆数据失败:', error.message);
+      // 出错时默认认为没有记忆数据，需要扫描
+      return false;
+    }
+  }
+
+  /**
+   * 检查是否是首次初始化（保留兼容性）
+   * @deprecated 使用 hasMemoryData() 代替
+   */
+  isFirstInitialization() {
+    return !this.hasMemoryData();
+  }
+
+  /**
    * 智能提取文件内容（使用 LLM）
    * @param {object} options - 提取选项
    * @param {number} options.chapterBatchSize - 章节批处理大小
    * @param {number} options.maxChapters - 最大处理章节数（0表示全部）
+   * @param {boolean} options.forceRescan - 是否强制重新扫描（默认false）
    * @param {function} options.onProgress - 进度回调
    */
   async intelligentExtract(options = {}) {
@@ -112,7 +218,8 @@ class MemoryManager {
 
       const result = await extractor.extractAll({
         chapterBatchSize: options.chapterBatchSize || 5,
-        maxChapters: options.maxChapters || 0
+        maxChapters: options.maxChapters || 0,
+        forceRescan: options.forceRescan || false // 传递 forceRescan 参数
       });
       
       console.log('✅ 智能提取完成');
@@ -320,11 +427,28 @@ class MemoryManager {
         results.world = true;
       }
 
-      // 更新角色状态
+      // 更新角色状态（支持状态迁移历史）
       if (updates.character_updates) {
+        // 从 character_history 中提取章节号（如果存在）
+        const chapterMap = {};
+        if (updates.character_history) {
+          for (const [charName, event] of Object.entries(updates.character_history)) {
+            if (event.chapter) {
+              chapterMap[charName] = event.chapter;
+            }
+          }
+        }
+
         for (const [charName, stateUpdates] of Object.entries(updates.character_updates)) {
           try {
-            await this.character.updateCharacterState(charName, stateUpdates);
+            await this.character.updateCharacterState(
+              charName, 
+              stateUpdates,
+              {
+                chapter: chapterMap[charName] || updates.chapter || null,
+                source: 'memory_updater'
+              }
+            );
             results.character = true;
           } catch (e) {
             console.warn(`角色更新失败: ${charName}`, e.message);
@@ -416,14 +540,19 @@ class MemoryManager {
    * 重置所有记忆
    */
   async resetAll() {
-    this.checkInitialized();
+    // 重置时不需要检查初始化状态，允许重置未初始化的系统
+    try {
+      if (this.world) await this.world.reset();
+      if (this.character) await this.character.reset();
+      if (this.plot) await this.plot.reset();
+      if (this.foreshadow) await this.foreshadow.reset();
+    } catch (err) {
+      console.warn('⚠️ 重置部分记忆模块失败:', err.message);
+    }
 
-    await this.world.reset();
-    await this.character.reset();
-    await this.plot.reset();
-    await this.foreshadow.reset();
-
-    console.log('🔄 所有记忆已重置');
+    // 重置后，标记为未初始化，需要重新初始化
+    this.initialized = false;
+    console.log('🔄 所有记忆已重置，系统需要重新初始化');
     return { success: true };
   }
 

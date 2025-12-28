@@ -220,7 +220,7 @@
           @send="handleAgentSend"
           @clear-history="agent.clearAgentHistory"
           @show-diff="handleShowDiff"
-          @apply-all-changes="agent.applyAllChanges"
+          @apply-all-changes="handleApplyAllChanges"
         />
 
         <!-- 记忆系统面板 -->
@@ -308,6 +308,39 @@
       @apply="handleApplyChange"
       @reject="handleRejectChange"
     />
+
+    <!-- 应用全部变更确认对话框 -->
+    <div v-if="showApplyAllConfirm" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click="showApplyAllConfirm = false">
+      <div class="bg-slate-800 rounded-lg p-6 max-w-md w-full mx-4 border border-slate-700" @click.stop>
+        <h3 class="text-lg font-semibold text-slate-200 mb-3">⚠️ 确认应用变更</h3>
+        <p class="text-sm text-slate-300 mb-4">
+          确定要应用所有 <strong class="text-emerald-400">{{ (agent.currentTask?.value?.changes?.filter((c: FileChange) => c.status === 'pending') || []).length }}</strong> 个变更吗？
+        </p>
+        <div class="space-y-2 mb-4 max-h-40 overflow-auto">
+          <div
+            v-for="change in (agent.currentTask?.value?.changes?.filter((c: FileChange) => c.status === 'pending') || [])"
+            :key="change.id"
+            class="text-xs text-slate-400 bg-slate-900/50 p-2 rounded"
+          >
+            <span class="text-emerald-400">{{ change.action }}</span> - {{ change.fileName }}
+          </div>
+        </div>
+        <div class="flex gap-3 justify-end">
+          <button
+            class="px-4 py-2 text-sm bg-slate-700 text-slate-200 rounded hover:bg-slate-600 transition-colors"
+            @click="showApplyAllConfirm = false"
+          >
+            取消
+          </button>
+          <button
+            class="px-4 py-2 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-500 transition-colors"
+            @click="confirmApplyAllChanges"
+          >
+            确认应用
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -805,6 +838,18 @@ const handleApplyChange = async (change: FileChange) => {
     agent.showDiffPreview.value = false;
     await handleRefresh();
     showAlert('变更已应用', '成功', 'info');
+    // 应用变更后，更新记忆系统
+    if (fs.workspaceRoot.value && memory.initialized.value) {
+      // 触发记忆系统更新（增量提取）
+      try {
+        await window.api?.memory?.extract?.({
+          chapterBatchSize: 5,
+          maxChapters: 0
+        });
+      } catch (err) {
+        console.warn('更新记忆系统失败:', err);
+      }
+    }
   }
 };
 
@@ -812,6 +857,56 @@ const handleRejectChange = (change: FileChange) => {
   agent.rejectFileChange(change);
   agent.showDiffPreview.value = false;
   showAlert('变更已拒绝', '提示', 'info');
+};
+
+// 应用全部变更（带确认）
+const showApplyAllConfirm = ref(false);
+const handleApplyAllChanges = async () => {
+  if (!agent.currentTask.value || agent.currentTask.value.changes.length === 0) {
+    showAlert('没有待应用的变更', '提示', 'warning');
+    return;
+  }
+  
+  // 显示确认对话框
+  showApplyAllConfirm.value = true;
+};
+
+const confirmApplyAllChanges = async () => {
+  showApplyAllConfirm.value = false;
+  
+  if (!agent.currentTask.value) return;
+  
+  const pendingChanges = agent.currentTask.value.changes.filter(c => c.status === 'pending');
+  if (pendingChanges.length === 0) {
+    showAlert('没有待应用的变更', '提示', 'warning');
+    return;
+  }
+  
+  try {
+    // 先显示所有变更的预览
+    for (const change of pendingChanges) {
+      await agent.applyFileChange(change);
+    }
+    
+    showAlert(`已应用 ${pendingChanges.length} 个变更`, '成功', 'info');
+    await handleRefresh();
+    
+    // 应用变更后，更新记忆系统
+    if (fs.workspaceRoot.value && memory.initialized.value) {
+      try {
+        await window.api?.memory?.extract?.({
+          chapterBatchSize: 5,
+          maxChapters: 0
+        });
+        console.log('✅ 记忆系统已更新');
+      } catch (err) {
+        console.warn('⚠️ 更新记忆系统失败:', err);
+      }
+    }
+  } catch (error: any) {
+    console.error('应用变更失败:', error);
+    showAlert(error.message, '应用变更失败', 'danger');
+  }
 };
 
 // 生命周期

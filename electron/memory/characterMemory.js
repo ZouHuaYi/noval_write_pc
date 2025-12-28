@@ -126,22 +126,145 @@ class CharacterMemory {
   }
 
   /**
-   * 更新角色状态
+   * 更新角色状态（增强版：记录状态迁移历史）
+   * @param {string} charIdOrName - 角色ID或名称
+   * @param {Object} stateUpdates - 状态更新
+   * @param {Object} options - 选项 { chapter, source }
    */
-  async updateCharacterState(charIdOrName, stateUpdates) {
+  async updateCharacterState(charIdOrName, stateUpdates, options = {}) {
     const char = this.getCharacter(charIdOrName);
     if (!char) {
       throw new Error(`角色不存在: ${charIdOrName}`);
     }
 
+    // 保存旧状态（深拷贝）
+    const oldState = JSON.parse(JSON.stringify(char.current_state));
+
+    // 更新状态
     char.current_state = {
       ...char.current_state,
       ...stateUpdates
     };
 
+    // 检测状态变化
+    const changes = this.detectStateChanges(oldState, char.current_state);
+
+    // 如果有变化，记录状态迁移历史
+    if (changes.length > 0) {
+      if (!char.state_history) {
+        char.state_history = [];
+      }
+
+      char.state_history.push({
+        timestamp: new Date().toISOString(),
+        chapter: options.chapter || null,
+        from: oldState,
+        to: JSON.parse(JSON.stringify(char.current_state)),
+        changes: changes,
+        source: options.source || 'unknown' // 'memory_updater', 'manual', 'rule_engine' 等
+      });
+
+      // 限制历史记录数量（保留最近100条）
+      if (char.state_history.length > 100) {
+        char.state_history = char.state_history.slice(-100);
+      }
+    }
+
     this.data.last_updated = new Date().toISOString();
     await this.save();
-    console.log(`✅ 更新角色状态: ${char.name}`);
+    console.log(`✅ 更新角色状态: ${char.name} (${changes.length} 个变化)`);
+  }
+
+  /**
+   * 检测状态变化
+   */
+  detectStateChanges(oldState, newState) {
+    const changes = [];
+    
+    // 检查每个字段的变化
+    for (const key in newState) {
+      const oldValue = oldState[key];
+      const newValue = newState[key];
+      
+      // 数组类型特殊处理
+      if (Array.isArray(oldValue) && Array.isArray(newValue)) {
+        if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) {
+          changes.push({
+            field: key,
+            from: oldValue,
+            to: newValue,
+            type: 'array_change'
+          });
+        }
+      } else if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) {
+        changes.push({
+          field: key,
+          from: oldValue,
+          to: newValue,
+          type: 'value_change'
+        });
+      }
+    }
+
+    // 检查是否有字段被删除
+    for (const key in oldState) {
+      if (!(key in newState)) {
+        changes.push({
+          field: key,
+          from: oldState[key],
+          to: null,
+          type: 'field_removed'
+        });
+      }
+    }
+
+    return changes;
+  }
+
+  /**
+   * 获取角色状态历史
+   */
+  getStateHistory(charIdOrName, limit = 10) {
+    const char = this.getCharacter(charIdOrName);
+    if (!char || !char.state_history) {
+      return [];
+    }
+    return char.state_history.slice(-limit);
+  }
+
+  /**
+   * 获取角色状态迁移轨迹
+   */
+  getStateTrajectory(charIdOrName, field = null) {
+    const char = this.getCharacter(charIdOrName);
+    if (!char || !char.state_history) {
+      return [];
+    }
+
+    const trajectory = [];
+    for (const record of char.state_history) {
+      if (field) {
+        // 只追踪特定字段
+        const change = record.changes.find(c => c.field === field);
+        if (change) {
+          trajectory.push({
+            timestamp: record.timestamp,
+            chapter: record.chapter,
+            from: change.from,
+            to: change.to
+          });
+        }
+      } else {
+        // 追踪所有变化
+        trajectory.push({
+          timestamp: record.timestamp,
+          chapter: record.chapter,
+          changes: record.changes
+        });
+      }
+    }
+
+    return trajectory;
   }
 
   /**

@@ -191,6 +191,9 @@ class MemoryUpdater {
         return { success: true, updated: false };
       }
 
+      // 添加章节号到 facts（用于状态迁移历史）
+      facts.chapter = chapterNum;
+
       // 应用更新
       const result = await this.memory.updateFromText(facts);
 
@@ -352,10 +355,20 @@ class MemoryUpdater {
 
   /**
    * 手动更新角色状态（无需 LLM）
+   * @param {string} charName - 角色名称
+   * @param {Object} updates - 状态更新
+   * @param {Object} options - 选项 { chapter, source }
    */
-  async updateCharacterState(charName, updates) {
+  async updateCharacterState(charName, updates, options = {}) {
     try {
-      await this.memory.character.updateCharacterState(charName, updates);
+      await this.memory.character.updateCharacterState(
+        charName, 
+        updates,
+        {
+          chapter: options.chapter || null,
+          source: options.source || 'manual'
+        }
+      );
       return { success: true };
     } catch (error) {
       return { success: false, error: error.message };

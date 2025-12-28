@@ -51,10 +51,16 @@
     <!-- 最后结果摘要 -->
     <div v-if="agent.hasResult.value && agent.resultSummary.value" class="result-summary">
       <h4 class="summary-title">✨ 执行结果</h4>
+      
+      <!-- 基础信息 -->
       <div class="summary-grid">
         <div class="summary-item">
           <span class="summary-label">文本长度</span>
           <span class="summary-value">{{ agent.resultSummary.value.textLength }} 字</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">执行时间</span>
+          <span class="summary-value">{{ formatExecutionTime(agent.resultSummary.value.executionTime) }}</span>
         </div>
         <div class="summary-item">
           <span class="summary-label">重写次数</span>
@@ -73,6 +79,58 @@
         <div class="summary-item">
           <span class="summary-label">发现问题</span>
           <span class="summary-value">{{ agent.resultSummary.value.errorCount }} 个</span>
+        </div>
+      </div>
+
+      <!-- 连贯性检查结果 -->
+      <div v-if="agent.resultSummary.value.coherenceScore !== null" class="coherence-section">
+        <h5 class="section-title">🔗 连贯性检查</h5>
+        <div class="coherence-grid">
+          <div class="coherence-item">
+            <span class="coherence-label">总体评分</span>
+            <span :class="['coherence-value', getCoherenceClass(agent.resultSummary.value.coherenceScore)]">
+              {{ agent.resultSummary.value.coherenceScore.toFixed(1) }}/100
+            </span>
+            <span class="coherence-status">
+              {{ getCoherenceStatusLabel(agent.resultSummary.value.coherenceStatus) }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 曲线分析结果 -->
+      <div v-if="agent.resultSummary.value.pacingMatch !== null || agent.resultSummary.value.emotionMatch !== null" class="curve-section">
+        <h5 class="section-title">📊 曲线分析</h5>
+        <div class="curve-grid">
+          <div v-if="agent.resultSummary.value.pacingMatch !== null" class="curve-item">
+            <span class="curve-label">节奏匹配度</span>
+            <span :class="['curve-value', getMatchClass(agent.resultSummary.value.pacingMatch)]">
+              {{ agent.resultSummary.value.pacingMatch.toFixed(1) }}%
+            </span>
+          </div>
+          <div v-if="agent.resultSummary.value.emotionMatch !== null" class="curve-item">
+            <span class="curve-label">情绪匹配度</span>
+            <span :class="['curve-value', getMatchClass(agent.resultSummary.value.emotionMatch)]">
+              {{ agent.resultSummary.value.emotionMatch.toFixed(1) }}%
+            </span>
+          </div>
+          <div v-if="agent.resultSummary.value.densityMatch !== null" class="curve-item">
+            <span class="curve-label">密度匹配度</span>
+            <span :class="['curve-value', getMatchClass(agent.resultSummary.value.densityMatch)]">
+              {{ agent.resultSummary.value.densityMatch.toFixed(1) }}%
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 章节规划信息 -->
+      <div v-if="agent.resultSummary.value.chapterPlan" class="chapter-plan-section">
+        <h5 class="section-title">📋 章节规划</h5>
+        <div class="chapter-plan-info">
+          <span class="plan-label">章节类型：</span>
+          <span class="plan-value">{{ agent.resultSummary.value.chapterPlan.chapter_structure?.type || '未知' }}</span>
+          <span class="plan-label">场景数量：</span>
+          <span class="plan-value">{{ agent.resultSummary.value.chapterPlan.chapter_structure?.total_scenes || 0 }} 个</span>
         </div>
       </div>
     </div>
@@ -140,6 +198,7 @@ const getStateLabel = (state: string) => {
     load_context: '加载上下文',
     plan_intent: '规划意图',
     write_draft: '生成初稿',
+    check_coherence: '连贯性检查',
     check_consistency: '一致性校验',
     rewrite: '重写',
     update_memory: '更新记忆',
@@ -175,6 +234,33 @@ const formatTimestamp = (timestamp: string) => {
 
 const formatData = (data: any) => {
   return JSON.stringify(data, null, 2);
+};
+
+const formatExecutionTime = (ms: number) => {
+  if (!ms) return '0s';
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+};
+
+const getCoherenceClass = (score: number) => {
+  if (score >= 80) return 'text-emerald-400';
+  if (score >= 60) return 'text-yellow-400';
+  return 'text-red-400';
+};
+
+const getCoherenceStatusLabel = (status: string) => {
+  const labels: Record<string, string> = {
+    good: '✅ 良好',
+    fair: '⚠️ 一般',
+    poor: '❌ 较差'
+  };
+  return labels[status] || status;
+};
+
+const getMatchClass = (score: number) => {
+  if (score >= 80) return 'text-emerald-400';
+  if (score >= 60) return 'text-yellow-400';
+  return 'text-red-400';
 };
 
 const toggleLogData = (index: number) => {
@@ -344,6 +430,10 @@ onUnmounted(() => {
   @apply bg-blue-500/20 text-blue-400;
 }
 
+.state-badge.check_coherence {
+  @apply bg-teal-500/20 text-teal-400;
+}
+
 .state-badge.check_consistency {
   @apply bg-yellow-500/20 text-yellow-400;
 }
@@ -378,6 +468,52 @@ onUnmounted(() => {
 
 .data-content {
   @apply text-xs bg-slate-950 text-slate-400 p-2 rounded overflow-x-auto font-mono;
+}
+
+.coherence-section,
+.curve-section,
+.chapter-plan-section {
+  @apply mt-4 pt-4 border-t border-slate-700;
+}
+
+.section-title {
+  @apply text-xs font-semibold text-slate-300 mb-2;
+}
+
+.coherence-grid,
+.curve-grid {
+  @apply grid grid-cols-1 md:grid-cols-3 gap-3;
+}
+
+.coherence-item,
+.curve-item {
+  @apply flex flex-col gap-1;
+}
+
+.coherence-label,
+.curve-label {
+  @apply text-xs text-slate-400;
+}
+
+.coherence-value,
+.curve-value {
+  @apply text-sm font-semibold;
+}
+
+.coherence-status {
+  @apply text-xs text-slate-500;
+}
+
+.chapter-plan-info {
+  @apply flex flex-wrap gap-2 text-xs;
+}
+
+.plan-label {
+  @apply text-slate-400;
+}
+
+.plan-value {
+  @apply text-slate-200 font-semibold;
 }
 </style>
 

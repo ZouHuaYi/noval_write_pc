@@ -21,7 +21,18 @@ interface AgentResult {
   text?: string;
   intent?: any;
   checkResult?: any;
+  coherenceResult?: any;
+  pacingAnalysis?: any;
+  emotionAnalysis?: any;
+  densityAnalysis?: any;
+  pacingComparison?: any;
+  emotionComparison?: any;
+  densityComparison?: any;
+  chapterPlan?: any;
   rewriteCount?: number;
+  executionTime?: number;
+  statistics?: any;
+  report?: any;
   executionLog?: any[];
   error?: string;
 }
@@ -35,7 +46,7 @@ interface AgentTask {
   error?: string;
 }
 
-type AgentState = 'idle' | 'load_context' | 'plan_intent' | 'write_draft' | 'check_consistency' | 'rewrite' | 'update_memory' | 'done' | 'error';
+type AgentState = 'idle' | 'load_context' | 'plan_intent' | 'write_draft' | 'check_coherence' | 'check_consistency' | 'rewrite' | 'update_memory' | 'done' | 'error';
 
 export function useNovelAgent() {
   const agentState = ref<AgentState>('idle');
@@ -206,6 +217,7 @@ export function useNovelAgent() {
       load_context: '加载上下文',
       plan_intent: '规划意图',
       write_draft: '生成初稿',
+      check_coherence: '连贯性检查',
       check_consistency: '一致性校验',
       rewrite: '重写',
       update_memory: '更新记忆',
@@ -224,9 +236,17 @@ export function useNovelAgent() {
       hasText: !!lastResult.value.text,
       textLength: lastResult.value.text?.length || 0,
       rewriteCount: lastResult.value.rewriteCount || 0,
+      executionTime: lastResult.value.executionTime || 0,
       checkStatus: lastResult.value.checkResult?.status || 'unknown',
       checkScore: lastResult.value.checkResult?.overall_score || 0,
-      errorCount: lastResult.value.checkResult?.errors?.length || 0
+      errorCount: lastResult.value.checkResult?.errors?.length || 0,
+      coherenceScore: lastResult.value.coherenceResult?.overall_score || null,
+      coherenceStatus: lastResult.value.coherenceResult?.overall_coherence || null,
+      pacingMatch: lastResult.value.pacingComparison?.score || null,
+      emotionMatch: lastResult.value.emotionComparison?.score || null,
+      densityMatch: lastResult.value.densityComparison?.score || null,
+      chapterPlan: lastResult.value.chapterPlan,
+      report: lastResult.value.report
     };
   });
 

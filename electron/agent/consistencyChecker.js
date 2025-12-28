@@ -1,13 +1,21 @@
 /**
- * Consistency Checker - 一致性校验器（增强版）
- * 结合规则引擎和 LLM，进行深度一致性校验
+ * Consistency Checker - 一致性校验器（4层架构版）
+ * 按照 REMED.md 要求，拆分为 4 层校验：
+ * 1. TextRuleCheck（文本层）
+ * 2. StateRuleCheck（状态层）
+ * 3. IntentContractCheck（契约层）
+ * 4. ArcProgressCheck（叙事推进层）
+ * 
+ * 核心升级：从「靠 prompt + 模型判断」➡️「像编译器一样判定小说是否合法」
  */
 
 const { safeParseJSON } = require('../utils/jsonParser');
+const EventExtractor = require('./eventExtractor');
 
 class ConsistencyChecker {
   constructor(ruleEngine) {
-    this.ruleEngine = ruleEngine;
+    this.ruleEngine = ruleEngine; // DSL 规则引擎
+    this.eventExtractor = new EventExtractor();
     this.systemPrompt = this.buildSystemPrompt();
   }
 
@@ -105,7 +113,7 @@ class ConsistencyChecker {
   }
 
   /**
-   * 执行一致性校验
+   * 执行一致性校验（4层架构）
    * @param {string} text - 待校验的文本
    * @param {Object} intent - 写作意图
    * @param {Object} context - 记忆上下文
@@ -113,32 +121,68 @@ class ConsistencyChecker {
    */
   async check(text, intent, context, llmCaller) {
     try {
-      console.log('🔍 开始一致性校验...');
+      console.log('🔍 开始一致性校验（4层架构）...');
 
-      // 第一步：规则引擎预检
-      const ruleViolations = await this.checkWithRules(text, context);
-      console.log(`📋 规则引擎发现 ${ruleViolations.length} 个问题`);
+      // 步骤 1: 事件抽取（临时，不写回记忆）
+      console.log('📊 步骤 1/5: 抽取事件和状态迁移...');
+      const extracted = await this.eventExtractor.extract(text, context, llmCaller);
+      const { events, state_transitions } = extracted;
+      console.log(`   抽取到 ${events.length} 个事件, ${state_transitions.length} 个状态迁移`);
 
-      // 第二步：LLM 深度校验
-      const llmResult = await this.checkWithLLM(text, intent, context, ruleViolations, llmCaller);
-      console.log(`🤖 LLM 校验完成`);
+      // 步骤 2-5: 4层校验
+      const layerResults = {
+        text: null,      // 第1层：文本层
+        state: null,   // 第2层：状态层
+        intent: null,  // 第3层：契约层
+        arc: null      // 第4层：叙事推进层
+      };
 
-      // 第三步：合并结果
-      const finalResult = this.mergeResults(ruleViolations, llmResult);
+      // 第1层：TextRuleCheck（文本层）
+      console.log('📝 步骤 2/5: TextRuleCheck（文本层）...');
+      layerResults.text = await this.checkTextLayer(text, context, llmCaller);
+
+      // 第2层：StateRuleCheck（状态层）
+      console.log('🔄 步骤 3/5: StateRuleCheck（状态层）...');
+      layerResults.state = await this.checkStateLayer(text, context, events, state_transitions);
+
+      // 第3层：IntentContractCheck（契约层）
+      console.log('🎯 步骤 4/5: IntentContractCheck（契约层）...');
+      layerResults.intent = await this.checkIntentLayer(text, intent, context);
+
+      // 第4层：ArcProgressCheck（叙事推进层）
+      console.log('📈 步骤 5/5: ArcProgressCheck（叙事推进层）...');
+      layerResults.arc = await this.checkArcLayer(text, context, events);
+
+      // 合并4层结果
+      const finalResult = this.mergeLayerResults(layerResults);
+
+      // 如果有致命错误或错误，状态为 fail
+      const hasFatal = finalResult.errors.some(e => e.severity === 'critical' || e.level === 'FATAL');
+      const hasError = finalResult.errors.some(e => 
+        e.severity === 'high' || e.severity === 'critical' || 
+        e.level === 'ERROR' || e.level === 'FATAL'
+      );
+
+      finalResult.status = (hasFatal || hasError) ? 'fail' : 'pass';
 
       console.log(`✅ 一致性校验完成 - 状态: ${finalResult.status}, 评分: ${finalResult.overall_score}`);
+      console.log(`   文本层: ${layerResults.text?.errors?.length || 0} 个问题`);
+      console.log(`   状态层: ${layerResults.state?.errors?.length || 0} 个问题`);
+      console.log(`   契约层: ${layerResults.intent?.errors?.length || 0} 个问题`);
+      console.log(`   推进层: ${layerResults.arc?.errors?.length || 0} 个问题`);
+
       return finalResult;
 
     } catch (error) {
       console.error('❌ 一致性校验失败:', error);
       
-      // 返回基本的错误结果
       return {
         status: 'fail',
         overall_score: 50,
         errors: [{
           type: 'logic',
           severity: 'medium',
+          level: 'ERROR',
           location: '整体',
           message: '校验过程出错: ' + error.message,
           suggestion: '请手动检查文本'
@@ -150,7 +194,294 @@ class ConsistencyChecker {
   }
 
   /**
-   * 使用规则引擎校验
+   * 第1层：TextRuleCheck（文本层）
+   * 检查文本本身的问题（格式、基础逻辑等）
+   */
+  async checkTextLayer(text, context, llmCaller) {
+    const errors = [];
+    const warnings = [];
+
+    // 使用 LLM 检查文本层问题（视角、标点、基础逻辑等）
+    try {
+      const llmResult = await this.checkWithLLM(text, null, context, [], llmCaller);
+      
+      // 只保留文本层相关的问题
+      for (const error of llmResult.errors || []) {
+        if (['pov', 'format', 'logic'].includes(error.type)) {
+          errors.push({
+            ...error,
+            layer: 'text',
+            source: 'llm'
+          });
+        }
+      }
+    } catch (error) {
+      console.error('文本层 LLM 校验失败:', error);
+    }
+
+    return {
+      layer: 'text',
+      errors,
+      warnings,
+      passed: errors.length === 0
+    };
+  }
+
+  /**
+   * 第2层：StateRuleCheck（状态层）
+   * 检查状态迁移是否合法
+   */
+  async checkStateLayer(text, context, events, stateTransitions) {
+    const errors = [];
+    const warnings = [];
+
+    if (!this.ruleEngine) {
+      return { layer: 'state', errors, warnings, passed: true };
+    }
+
+    try {
+      // 使用 DSL 规则引擎检查状态相关规则
+      const violations = await this.ruleEngine.checkRules({
+        text,
+        intent: null,
+        context,
+        events,
+        stateTransitions
+      });
+
+      // 筛选状态层相关的规则（CHARACTER, WORLD 中的状态规则）
+      for (const violation of violations) {
+        if (violation.scope === 'CHARACTER' || 
+            (violation.scope === 'WORLD' && violation.type === 'state')) {
+          errors.push({
+            ...violation,
+            layer: 'state',
+            severity: this.mapLevelToSeverity(violation.level),
+            source: 'dsl_rule_engine'
+          });
+        }
+      }
+    } catch (error) {
+      console.error('状态层校验失败:', error);
+    }
+
+    return {
+      layer: 'state',
+      errors,
+      warnings,
+      passed: errors.length === 0
+    };
+  }
+
+  /**
+   * 第3层：IntentContractCheck（契约层）
+   * 检查是否满足 Intent 契约
+   */
+  async checkIntentLayer(text, intent, context) {
+    const errors = [];
+    const warnings = [];
+
+    if (!intent) {
+      return { layer: 'intent', errors, warnings, passed: true };
+    }
+
+    if (!this.ruleEngine) {
+      return { layer: 'intent', errors, warnings, passed: true };
+    }
+
+    try {
+      // 使用 DSL 规则引擎检查 Intent 契约规则
+      const violations = await this.ruleEngine.checkRules({
+        text,
+        intent,
+        context,
+        events: [],
+        stateTransitions: []
+      });
+
+      // 筛选 Intent 层相关的规则
+      for (const violation of violations) {
+        if (violation.scope === 'INTENT') {
+          errors.push({
+            ...violation,
+            layer: 'intent',
+            severity: this.mapLevelToSeverity(violation.level),
+            source: 'dsl_rule_engine'
+          });
+        }
+      }
+    } catch (error) {
+      console.error('契约层校验失败:', error);
+    }
+
+    return {
+      layer: 'intent',
+      errors,
+      warnings,
+      passed: errors.length === 0
+    };
+  }
+
+  /**
+   * 第4层：ArcProgressCheck（叙事推进层）
+   * 检查 Arc 是否推进（防水文）
+   */
+  async checkArcLayer(text, context, events) {
+    const errors = [];
+    const warnings = [];
+
+    if (!this.ruleEngine) {
+      return { layer: 'arc', errors, warnings, passed: true };
+    }
+
+    try {
+      // 使用 DSL 规则引擎检查 Arc 推进规则
+      const violations = await this.ruleEngine.checkRules({
+        text,
+        intent: null,
+        context,
+        events,
+        stateTransitions: []
+      });
+
+      // 筛选 Arc 层相关的规则
+      for (const violation of violations) {
+        if (violation.scope === 'ARC') {
+          errors.push({
+            ...violation,
+            layer: 'arc',
+            severity: this.mapLevelToSeverity(violation.level),
+            source: 'dsl_rule_engine'
+          });
+        }
+      }
+    } catch (error) {
+      console.error('推进层校验失败:', error);
+    }
+
+    return {
+      layer: 'arc',
+      errors,
+      warnings,
+      passed: errors.length === 0
+    };
+  }
+
+  /**
+   * 合并4层结果
+   */
+  mergeLayerResults(layerResults) {
+    const allErrors = [];
+    const allWarnings = [];
+
+    // 收集所有错误和警告
+    for (const layer of Object.values(layerResults)) {
+      if (layer?.errors) {
+        allErrors.push(...layer.errors);
+      }
+      if (layer?.warnings) {
+        allWarnings.push(...layer.warnings);
+      }
+    }
+
+    // 去重（基于 message）
+    const uniqueErrors = [];
+    const seen = new Set();
+    
+    for (const error of allErrors) {
+      const key = error.message || error.rule_id;
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniqueErrors.push(error);
+      }
+    }
+
+    // 按严重性排序
+    const severityOrder = { 
+      critical: 0, FATAL: 0,
+      high: 1, ERROR: 1,
+      medium: 2, WARN: 2,
+      low: 3
+    };
+    uniqueErrors.sort((a, b) => {
+      const aSev = severityOrder[a.severity] ?? severityOrder[a.level] ?? 99;
+      const bSev = severityOrder[b.severity] ?? severityOrder[b.level] ?? 99;
+      return aSev - bSev;
+    });
+
+    // 计算评分
+    let score = 100;
+    for (const error of uniqueErrors) {
+      const sev = error.severity || error.level || 'medium';
+      if (sev === 'critical' || sev === 'FATAL') score -= 20;
+      else if (sev === 'high' || sev === 'ERROR') score -= 10;
+      else if (sev === 'medium' || sev === 'WARN') score -= 5;
+      else score -= 2;
+    }
+    score = Math.max(0, score);
+
+    return {
+      status: 'pass', // 将在 check() 中根据错误确定
+      overall_score: score,
+      errors: uniqueErrors,
+      warnings: allWarnings,
+      analysis: this.generateAnalysis(layerResults, uniqueErrors),
+      layer_results: layerResults,
+      statistics: {
+        total_errors: uniqueErrors.length,
+        by_layer: {
+          text: layerResults.text?.errors?.length || 0,
+          state: layerResults.state?.errors?.length || 0,
+          intent: layerResults.intent?.errors?.length || 0,
+          arc: layerResults.arc?.errors?.length || 0
+        }
+      }
+    };
+  }
+
+  /**
+   * 生成分析报告
+   */
+  generateAnalysis(layerResults, errors) {
+    const layers = [];
+    if (layerResults.text?.errors?.length > 0) layers.push('文本层');
+    if (layerResults.state?.errors?.length > 0) layers.push('状态层');
+    if (layerResults.intent?.errors?.length > 0) layers.push('契约层');
+    if (layerResults.arc?.errors?.length > 0) layers.push('推进层');
+
+    if (errors.length === 0) {
+      return '✅ 所有层校验通过，文本符合要求。';
+    }
+
+    let analysis = `发现 ${errors.length} 个问题，涉及 ${layers.join('、')}。`;
+    
+    const fatalCount = errors.filter(e => e.severity === 'critical' || e.level === 'FATAL').length;
+    const errorCount = errors.filter(e => e.severity === 'high' || e.level === 'ERROR').length;
+    
+    if (fatalCount > 0) {
+      analysis += `其中 ${fatalCount} 个致命错误必须修正。`;
+    }
+    if (errorCount > 0) {
+      analysis += `另有 ${errorCount} 个错误需要修正。`;
+    }
+
+    return analysis;
+  }
+
+  /**
+   * 映射规则级别到严重性
+   */
+  mapLevelToSeverity(level) {
+    const mapping = {
+      'FATAL': 'critical',
+      'ERROR': 'high',
+      'WARN': 'medium'
+    };
+    return mapping[level] || 'medium';
+  }
+
+  /**
+   * 使用规则引擎校验（保留兼容性）
    */
   async checkWithRules(text, context) {
     if (!this.ruleEngine) {
@@ -158,13 +489,22 @@ class ConsistencyChecker {
     }
 
     try {
-      const violations = await this.ruleEngine.checkRules(text, context);
+      // 快速抽取事件
+      const extracted = this.eventExtractor.quickExtract(text);
+      
+      const violations = await this.ruleEngine.checkRules({
+        text,
+        intent: null,
+        context,
+        events: extracted.events,
+        stateTransitions: extracted.state_transitions
+      });
       
       // 转换为标准格式
       return violations.map(v => ({
         type: v.type,
-        severity: v.severity,
-        location: '文本中', // 规则引擎通常无法精确定位
+        severity: this.mapLevelToSeverity(v.level),
+        location: '文本中',
         message: v.message,
         suggestion: v.suggestion,
         rule_id: v.rule_id,

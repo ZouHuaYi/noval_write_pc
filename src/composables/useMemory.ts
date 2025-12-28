@@ -3,7 +3,7 @@
  * 管理 Novel Agent 的5层记忆系统
  */
 
-import { ref, computed } from 'vue';
+import { computed, ref } from 'vue';
 
 declare global {
   interface Window {
@@ -409,7 +409,7 @@ export function useMemory() {
   };
 
   // 重置记忆
-  const resetMemory = async () => {
+  const resetMemory = async (workspaceRoot?: string) => {
     if (!window.api?.memory) {
       error.value = 'Memory API 不可用';
       return { success: false, error: error.value };
@@ -425,7 +425,20 @@ export function useMemory() {
         memorySummary.value = null;
         characters.value = [];
         foreshadows.value = [];
-        await getSummary();
+        
+        // 重置后，如果提供了工作区路径，重新初始化
+        if (workspaceRoot) {
+          console.log('🔄 重置后重新初始化记忆系统...');
+          const initResult = await initMemory(workspaceRoot);
+          if (initResult?.success) {
+            await getSummary();
+            await getAllCharacters();
+            await getPendingForeshadows();
+          }
+        } else {
+          // 如果没有提供工作区路径，只清空数据
+          initialized.value = false;
+        }
       } else {
         error.value = result.error || '重置失败';
       }

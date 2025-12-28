@@ -1,0 +1,93 @@
+{
+  "version": "2.0",
+  "description": "Novel Agent DSL 规则（默认规则）",
+  "rules": [
+    {
+      "id": "NO_TIME_REVERSAL",
+      "name": "禁止时间倒流",
+      "scope": "WORLD",
+      "type": "STATE_RULE",
+      "when": "AFTER_CHAPTER",
+      "assert": "event.type != TIME_REVERSE",
+      "level": "FATAL",
+      "message": "禁止时间倒流事件",
+      "suggestion": "请移除时间倒流相关情节",
+      "enabled": true
+    },
+    {
+      "id": "NO_REVIVE",
+      "name": "禁止角色复活",
+      "scope": "CHARACTER",
+      "type": "STATE_RULE",
+      "when": "AFTER_CHAPTER",
+      "assert": {
+        "forbid": {
+          "character": {
+            "state_transition": "Dead -> Alive"
+          }
+        }
+      },
+      "level": "FATAL",
+      "message": "角色已死亡，不允许复活",
+      "suggestion": "请移除复活情节，或改为其他解释（如：假死、替身等）",
+      "enabled": true
+    },
+    {
+      "id": "CHARACTER_TRAIT_LOCK",
+      "name": "角色性格锁定",
+      "scope": "CHARACTER",
+      "type": "TRAIT_RULE",
+      "assert": {
+        "if": "character.traits.contains('冷静')",
+        "then": "text.emotion != '失控咆哮'"
+      },
+      "level": "ERROR",
+      "message": "角色性格与行为不符",
+      "suggestion": "请调整角色行为以符合性格设定",
+      "enabled": true
+    },
+    {
+      "id": "NO_RETCON",
+      "name": "禁止历史矛盾",
+      "scope": "HISTORY",
+      "type": "HISTORY_RULE",
+      "assert": "event.must_not_contradict(history)",
+      "level": "FATAL",
+      "message": "事件与历史记录矛盾",
+      "suggestion": "请检查事件是否与已有历史冲突",
+      "enabled": true
+    },
+    {
+      "id": "INTENT_CONTRACT",
+      "name": "Intent 契约规则",
+      "scope": "INTENT",
+      "type": "CONTRACT_RULE",
+      "assert": {
+        "must_fulfill": [
+          "intent.goal"
+        ],
+        "must_not_violate": [
+          "intent.constraints"
+        ]
+      },
+      "level": "FATAL",
+      "message": "文本未满足写作意图约束",
+      "suggestion": "请确保文本实现了写作意图中的目标，并遵守所有约束",
+      "enabled": true
+    },
+    {
+      "id": "ARC_MUST_PROGRESS",
+      "name": "Arc 必须推进",
+      "scope": "ARC",
+      "type": "ARC_RULE",
+      "assert": {
+        "arc.phase": "must_change_or_intensify"
+      },
+      "level": "ERROR",
+      "message": "Arc 阶段未推进，可能为水文",
+      "suggestion": "请增加情节推进或事件",
+      "enabled": true
+    }
+  ]
+}
+
