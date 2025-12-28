@@ -3,7 +3,7 @@
  * 管理 Novel Agent 的任务执行、状态跟踪和日志
  */
 
-import { ref, computed } from 'vue';
+import { computed, ref } from 'vue';
 
 declare global {
   interface Window {
@@ -55,6 +55,8 @@ export function useNovelAgent() {
   const isExecuting = ref(false);
   const error = ref<string>('');
   const initialized = ref(false);
+  const isInitializing = ref(false);
+  const initializationProgress = ref<string>('');
   const lastResult = ref<AgentResult | null>(null);
 
   // 初始化 Novel Agent
@@ -65,6 +67,8 @@ export function useNovelAgent() {
     }
 
     error.value = '';
+    isInitializing.value = true;
+    initializationProgress.value = '正在初始化 Agent...';
 
     try {
       const result = await window.api.novelAgent.init(workspaceRoot);
@@ -72,14 +76,22 @@ export function useNovelAgent() {
       if (result.success) {
         initialized.value = true;
         agentState.value = 'idle';
+        initializationProgress.value = '初始化完成';
       } else {
         error.value = result.error || '初始化失败';
+        initializationProgress.value = '初始化失败';
       }
 
       return result;
     } catch (err: any) {
       error.value = err.message || '初始化 Novel Agent 失败';
+      initializationProgress.value = '初始化失败';
       return { success: false, error: error.value };
+    } finally {
+      // 延迟一下再设置为 false，让用户看到完成状态
+      setTimeout(() => {
+        isInitializing.value = false;
+      }, 500);
     }
   };
 
@@ -258,6 +270,8 @@ export function useNovelAgent() {
     isExecuting,
     error,
     initialized,
+    isInitializing,
+    initializationProgress,
     lastResult,
 
     // Computed

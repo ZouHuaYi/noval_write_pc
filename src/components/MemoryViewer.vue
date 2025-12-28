@@ -453,9 +453,7 @@ const handleIntelligentExtract = async (forceRescan: boolean = false) => {
 };
 
 onMounted(() => {
-  if (memory.initialized.value) {
-    handleRefresh();
-  }
+  handleRefresh();
 });
 </script>
 

@@ -146,6 +146,17 @@
 
       <!-- 右侧：Chat/Agent/Novel 切换面板 -->
       <div class="w-96 min-w-[400px] flex flex-col border-l border-slate-800">
+        <!-- Agent 初始化状态提示 -->
+        <div 
+          v-if="novelAgent.isInitializing.value || (!novelAgent.initialized.value && fs.workspaceRoot.value)"
+          class="h-8 flex items-center justify-center gap-2 px-2 border-b border-slate-800 bg-amber-900/20 text-amber-400 text-[11px]"
+        >
+          <svg class="w-3.5 h-3.5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+          </svg>
+          <span>{{ novelAgent.initializationProgress.value || '正在初始化 Agent...' }}</span>
+        </div>
+        
         <!-- 选项卡 -->
         <div class="flex w-full border-b border-slate-800 bg-slate-950/70 scrollbar-hide">
           <button
@@ -168,27 +179,42 @@
           </button>
           <button
             class="flex-1 px-2 py-2 text-[11px] font-medium transition-colors whitespace-nowrap"
-            :class="rightPanelMode === 'memory' 
-              ? 'text-emerald-400 border-b-2 border-emerald-600 bg-slate-900/50' 
-              : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30'"
+            :class="[
+              rightPanelMode === 'memory' 
+                ? 'text-emerald-400 border-b-2 border-emerald-600 bg-slate-900/50' 
+                : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30',
+              (!novelAgent.initialized.value || novelAgent.isInitializing.value) && 'opacity-50 cursor-not-allowed'
+            ]"
+            :disabled="!novelAgent.initialized.value || novelAgent.isInitializing.value"
+            :title="(!novelAgent.initialized.value || novelAgent.isInitializing.value) ? 'Agent 未初始化完成，请稍候...' : '记忆系统'"
             @click="rightPanelMode = 'memory'"
           >
             📚 记忆
           </button>
           <button
             class="flex-1 px-2 py-2 text-[11px] font-medium transition-colors whitespace-nowrap"
-            :class="rightPanelMode === 'rules' 
-              ? 'text-emerald-400 border-b-2 border-emerald-600 bg-slate-900/50' 
-              : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30'"
+            :class="[
+              rightPanelMode === 'rules' 
+                ? 'text-emerald-400 border-b-2 border-emerald-600 bg-slate-900/50' 
+                : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30',
+              (!novelAgent.initialized.value || novelAgent.isInitializing.value) && 'opacity-50 cursor-not-allowed'
+            ]"
+            :disabled="!novelAgent.initialized.value || novelAgent.isInitializing.value"
+            :title="(!novelAgent.initialized.value || novelAgent.isInitializing.value) ? 'Agent 未初始化完成，请稍候...' : '规则编辑器'"
             @click="rightPanelMode = 'rules'"
           >
             ⚙️ 规则
           </button>
           <button
             class="flex-1 px-2 py-2 text-[11px] font-medium transition-colors whitespace-nowrap"
-            :class="rightPanelMode === 'log' 
-              ? 'text-emerald-400 border-b-2 border-emerald-600 bg-slate-900/50' 
-              : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30'"
+            :class="[
+              rightPanelMode === 'log' 
+                ? 'text-emerald-400 border-b-2 border-emerald-600 bg-slate-900/50' 
+                : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30',
+              (!novelAgent.initialized.value || novelAgent.isInitializing.value) && 'opacity-50 cursor-not-allowed'
+            ]"
+            :disabled="!novelAgent.initialized.value || novelAgent.isInitializing.value"
+            :title="(!novelAgent.initialized.value || novelAgent.isInitializing.value) ? 'Agent 未初始化完成，请稍候...' : '执行日志'"
             @click="rightPanelMode = 'log'"
           >
             📋 日志
@@ -228,7 +254,7 @@
         />
 
         <!-- 记忆系统面板 -->
-        <div v-show="rightPanelMode === 'memory'" class="flex-1 overflow-hidden">
+        <div v-if="rightPanelMode === 'memory'" class="flex-1 overflow-hidden">
           <MemoryViewer :workspace-root="fs.workspaceRoot.value" />
         </div>
 
@@ -238,7 +264,7 @@
         </div>
 
         <!-- 规则管理面板 -->
-        <div v-show="rightPanelMode === 'rules'" class="flex-1 overflow-hidden">
+        <div v-if="rightPanelMode === 'rules'" class="flex-1 overflow-hidden">
           <RuleEditor />
         </div>
       </div>
@@ -441,40 +467,57 @@ const initializeNovelAgentSystem = async (workspaceRoot: string) => {
     return;
   }
 
+  // 重置状态
+  novelAgent.initialized.value = false;
+  novelAgent.isInitializing.value = true;
+  novelAgent.initializationProgress.value = '正在初始化...';
+
   console.log('🚀 开始初始化 Novel Agent 系统...');
   console.log('工作区路径:', workspaceRoot);
   
   try {
     // 初始化记忆系统（会自动提取设定文件）
+    novelAgent.initializationProgress.value = '正在初始化记忆系统...';
     console.log('📚 初始化记忆系统...');
     const memResult = await memory.initMemory(workspaceRoot);
     
     if (memResult?.success) {
       console.log('✅ 记忆系统初始化成功');
+      novelAgent.initializationProgress.value = '记忆系统初始化成功，正在加载数据...';
       // 初始化后立即加载数据
       await memory.getAllCharacters();
       await memory.getPendingForeshadows();
       await memory.getSummary();
     } else {
       console.error('❌ 记忆系统初始化失败:', memResult?.error);
+      novelAgent.initializationProgress.value = '记忆系统初始化失败';
       showAlert('记忆系统初始化失败', memResult?.error || '未知错误', 'danger');
     }
     
     // 初始化 Novel Agent
+    novelAgent.initializationProgress.value = '正在初始化 Agent...';
     console.log('🤖 初始化 Novel Agent...');
     const agentResult = await novelAgent.initAgent(workspaceRoot);
     
     if (agentResult?.success) {
       console.log('✅ Novel Agent 初始化成功');
+      novelAgent.initializationProgress.value = '初始化完成';
     } else {
       console.error('❌ Novel Agent 初始化失败:', agentResult?.error);
+      novelAgent.initializationProgress.value = 'Agent 初始化失败';
       showAlert('Novel Agent 初始化失败', agentResult?.error || '未知错误', 'danger');
     }
     
     console.log('✅ Novel Agent 系统初始化完成');
   } catch (err: any) {
     console.error('❌ 初始化过程出错:', err);
+    novelAgent.initializationProgress.value = '初始化过程出错';
     showAlert('初始化失败', err.message || '未知错误', 'danger');
+  } finally {
+    // 延迟一下再设置为 false，让用户看到完成状态
+    setTimeout(() => {
+      novelAgent.isInitializing.value = false;
+    }, 1000);
   }
 };
 
@@ -482,6 +525,11 @@ const initializeNovelAgentSystem = async (workspaceRoot: string) => {
 watch(() => fs.workspaceRoot.value, async (newRoot, oldRoot) => {
   // 只在工作区真正变化时初始化（避免重复初始化）
   if (newRoot && newRoot !== oldRoot) {
+    // 如果当前在记忆/规则/日志面板，切换回 chat 面板（因为这些功能需要 Agent 初始化）
+    if (['memory', 'rules', 'log'].includes(rightPanelMode.value)) {
+      rightPanelMode.value = 'chat';
+    }
+    
     await initializeNovelAgentSystem(newRoot);
   }
 }, { immediate: false });
