@@ -126,6 +126,73 @@ class PlotMemory {
   }
 
   /**
+   * 删除已完成事件（用于清理无用记忆）
+   */
+  async removeCompletedEvent(eventId) {
+    if (!this.data.main_plotline.completed_events) {
+      return false;
+    }
+
+    const index = this.data.main_plotline.completed_events.findIndex(e => e.id === eventId);
+    if (index === -1) {
+      return false;
+    }
+
+    const removed = this.data.main_plotline.completed_events.splice(index, 1)[0];
+    this.data.last_updated = new Date().toISOString();
+    await this.save();
+    console.log(`✅ 已删除事件: ${removed.name || eventId}`);
+    return true;
+  }
+
+  /**
+   * 更新已完成事件（用于修正记忆）
+   */
+  async updateCompletedEvent(eventId, updates) {
+    if (!this.data.main_plotline.completed_events) {
+      return false;
+    }
+
+    const event = this.data.main_plotline.completed_events.find(e => e.id === eventId);
+    if (!event) {
+      return false;
+    }
+
+    // 更新事件信息
+    Object.assign(event, updates, {
+      updated_at: new Date().toISOString()
+    });
+
+    this.data.last_updated = new Date().toISOString();
+    await this.save();
+    console.log(`✅ 已更新事件: ${event.name || eventId}`);
+    return true;
+  }
+
+  /**
+   * 根据章节删除事件（用于重写章节时清理旧记忆）
+   */
+  async removeEventsByChapter(chapterNumber) {
+    if (!this.data.main_plotline.completed_events) {
+      return 0;
+    }
+
+    const beforeCount = this.data.main_plotline.completed_events.length;
+    this.data.main_plotline.completed_events = this.data.main_plotline.completed_events.filter(
+      e => e.chapter !== chapterNumber
+    );
+    const removedCount = beforeCount - this.data.main_plotline.completed_events.length;
+
+    if (removedCount > 0) {
+      this.data.last_updated = new Date().toISOString();
+      await this.save();
+      console.log(`✅ 已删除第${chapterNumber}章的 ${removedCount} 个事件`);
+    }
+
+    return removedCount;
+  }
+
+  /**
    * 添加待完成目标
    */
   async addPendingGoal(goal) {

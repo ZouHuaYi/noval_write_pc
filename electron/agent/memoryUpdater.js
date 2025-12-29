@@ -65,6 +65,15 @@ class MemoryUpdater {
         "significance": "minor" | "normal" | "major" | "critical"
       }
     ],
+    "updated_events": [
+      {
+        "id": "事件ID",
+        "name": "更新后的事件名称",
+        "description": "更新后的事件描述"
+      }
+    ],
+    "deleted_events": ["事件ID1", "事件ID2"],
+    "delete_events_by_chapter": [章节号],
     "timeline_events": [
       {
         "chapter": 章节号,
@@ -111,6 +120,7 @@ class MemoryUpdater {
 3. **去除修辞**：去除夸张、比喻等修辞成分
 4. **明确变化**：只记录确实发生变化的信息
 5. **章节定位**：如果知道章节号，一定要填写
+6. **重写处理**：如果这是重写章节，需要标记需要删除的旧记忆（使用 delete_events_by_chapter 和 _delete_by_chapter）
 
 # 示例
 
@@ -212,6 +222,26 @@ class MemoryUpdater {
 
       // 添加章节号到 facts（用于状态迁移历史）
       facts.chapter = chapterNum;
+      
+      // 如果这是重写章节，标记需要清理旧记忆
+      if (request.replace_chapter) {
+        facts.replace_chapter = request.replace_chapter;
+        // 标记需要删除该章节的旧事件和状态
+        if (!facts.plot_updates) facts.plot_updates = {};
+        if (!Array.isArray(facts.plot_updates.delete_events_by_chapter)) {
+          facts.plot_updates.delete_events_by_chapter = [];
+        }
+        facts.plot_updates.delete_events_by_chapter.push(request.replace_chapter);
+        
+        // 标记需要删除该章节的角色状态历史
+        if (!facts.character_updates) facts.character_updates = {};
+        if (!Array.isArray(facts.character_updates._delete_by_chapter)) {
+          facts.character_updates._delete_by_chapter = [];
+        }
+        facts.character_updates._delete_by_chapter.push(request.replace_chapter);
+        
+        console.log(`   🗑️ 标记清理第${request.replace_chapter}章的旧记忆`);
+      }
 
       // 应用更新
       console.log('📊 步骤 3/3: 应用更新到记忆系统...');

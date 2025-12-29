@@ -133,15 +133,81 @@ class CharacterMemory {
   }
 
   /**
+   * 删除角色的状态历史（用于清理无用记忆）
+   * @param {string} charIdOrName - 角色ID或名称
+   * @param {number} chapterNumber - 章节号（删除该章节的状态历史）
+   */
+  async removeStateHistoryByChapter(charIdOrName, chapterNumber) {
+    const char = this.getCharacter(charIdOrName);
+    if (!char) {
+      return false;
+    }
+
+    if (!char.state_history) {
+      return false;
+    }
+
+    const beforeCount = char.state_history.length;
+    char.state_history = char.state_history.filter(
+      h => h.chapter !== chapterNumber
+    );
+    const removedCount = beforeCount - char.state_history.length;
+
+    if (removedCount > 0) {
+      this.data.last_updated = new Date().toISOString();
+      await this.save();
+      console.log(`✅ 已删除 ${char.name} 在第${chapterNumber}章的 ${removedCount} 条状态历史`);
+    }
+
+    return removedCount > 0;
+  }
+
+  /**
+   * 删除角色的历史记录（用于清理无用记忆）
+   * @param {string} charIdOrName - 角色ID或名称
+   * @param {number} chapterNumber - 章节号（删除该章节的历史记录）
+   */
+  async removeHistoryByChapter(charIdOrName, chapterNumber) {
+    const char = this.getCharacter(charIdOrName);
+    if (!char) {
+      return false;
+    }
+
+    if (!char.history) {
+      return false;
+    }
+
+    const beforeCount = char.history.length;
+    char.history = char.history.filter(
+      h => h.chapter !== chapterNumber
+    );
+    const removedCount = beforeCount - char.history.length;
+
+    if (removedCount > 0) {
+      this.data.last_updated = new Date().toISOString();
+      await this.save();
+      console.log(`✅ 已删除 ${char.name} 在第${chapterNumber}章的 ${removedCount} 条历史记录`);
+    }
+
+    return removedCount > 0;
+  }
+
+  /**
    * 更新角色状态（增强版：记录状态迁移历史）
    * @param {string} charIdOrName - 角色ID或名称
    * @param {Object} stateUpdates - 状态更新
-   * @param {Object} options - 选项 { chapter, source }
+   * @param {Object} options - 选项 { chapter, source, replaceChapter } - replaceChapter: 如果提供，会先删除该章节的旧状态
    */
   async updateCharacterState(charIdOrName, stateUpdates, options = {}) {
     const char = this.getCharacter(charIdOrName);
     if (!char) {
       throw new Error(`角色不存在: ${charIdOrName}`);
+    }
+
+    // 如果指定了 replaceChapter，先删除该章节的旧状态
+    if (options.replaceChapter) {
+      await this.removeStateHistoryByChapter(charIdOrName, options.replaceChapter);
+      await this.removeHistoryByChapter(charIdOrName, options.replaceChapter);
     }
 
     // 保存旧状态（深拷贝）

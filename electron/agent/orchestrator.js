@@ -6,6 +6,7 @@
 const MemoryManager = require('../memory');
 const RuleEngine = require('../rules/ruleEngine'); // 保留旧规则引擎作为兼容
 const DSLRuleEngine = require('../rules/dslRuleEngine'); // 新的 DSL 规则引擎
+const IntentAnalyzer = require('./intentAnalyzer'); // 意图分析器（新增）
 const IntentPlanner = require('./intentPlanner');
 const ConsistencyChecker = require('./consistencyChecker');
 const RewriteAgent = require('./rewriter');
@@ -19,6 +20,7 @@ const PacingController = require('./pacingController'); // 节奏控制器
 const EmotionCurveManager = require('./emotionCurveManager'); // 情绪曲线管理器
 const DensityController = require('./densityController'); // 密度控制器
 const SceneStructurePlanner = require('./sceneStructurePlanner'); // 场景结构规划器
+const ContextLoader = require('./contextLoader'); // 智能上下文加载器（新增）
 const ErrorHandler = require('./utils/errorHandler'); // 错误处理工具
 const PerformanceOptimizer = require('./utils/performanceOptimizer'); // 性能优化工具
 const ReportGenerator = require('./utils/reportGenerator'); // 报告生成器
@@ -34,6 +36,7 @@ class AgentOrchestrator {
     this.memory = null;
     this.ruleEngine = null; // 旧规则引擎（兼容）
     this.dslRuleEngine = null; // 新的 DSL 规则引擎
+    this.intentAnalyzer = null; // 意图分析器（新增）
     this.intentPlanner = null;
     this.consistencyChecker = null;
     this.rewriter = null;
@@ -47,6 +50,7 @@ class AgentOrchestrator {
     this.emotionCurveManager = null; // 情绪曲线管理器
     this.densityController = null; // 密度控制器
     this.sceneStructurePlanner = null; // 场景结构规划器
+    this.contextLoader = null; // 智能上下文加载器（新增）
     this.currentTask = null;
     this.executionLog = [];
     this.initialized = false;
@@ -89,6 +93,7 @@ class AgentOrchestrator {
       await this.chapterFileManager.initialize();
 
       // 初始化各个 Agent 模块
+      this.intentAnalyzer = new IntentAnalyzer(); // 意图分析器（新增）
       this.intentPlanner = new IntentPlanner();
       this.chapterAnalyzer = new ChapterAnalyzer(this.memory);
       this.chapterPlanner = new ChapterPlanner(this.memory);
@@ -100,6 +105,7 @@ class AgentOrchestrator {
       this.consistencyChecker = new ConsistencyChecker(this.dslRuleEngine); // 使用 DSL 规则引擎
       this.rewriter = new RewriteAgent();
       this.memoryUpdater = new MemoryUpdater(this.memory);
+      this.contextLoader = new ContextLoader(this.workspaceRoot, this.fileScanner, this.chapterFileManager, this.memory); // 智能上下文加载器（传入 memory 用于获取设定文件）
 
       this.initialized = true;
       this.setState(AgentStates.IDLE);
@@ -174,22 +180,281 @@ class AgentOrchestrator {
 
   /**
    * 内部执行方法（实际执行逻辑）
+   * 新流程：先分析意图，然后根据意图执行不同的流程
    */
   async executeInternal(request, llmCaller, startTime) {
-      // 状态 1: 加载上下文
+      // ========== 阶段 0: 分析用户意图（新增） ==========
       this.setState(AgentStates.LOAD_CONTEXT);
-      const context = await this.loadContext(request);
+      this.addStep('analyze_intent', '分析用户意图');
+      
+      const analyzedIntent = await ErrorHandler.withRetry(
+        () => this.intentAnalyzer.analyze(request.userRequest, request.targetFile, llmCaller),
+        {
+          maxRetries: 2,
+          shouldRetry: (error) => error.type === 'llm_error'
+        }
+      );
+      
+      this.log('Intent analyzed', { 
+        intent_type: analyzedIntent.intent_type,
+        target_chapter: analyzedIntent.target_chapter,
+        target_file: analyzedIntent.target_file
+      });
+
+      // 根据意图类型执行不同的流程
+      if (analyzedIntent.intent_type === 'CHECK') {
+        return await this.executeCheckFlow(analyzedIntent, request, llmCaller, startTime);
+      } else if (analyzedIntent.intent_type === 'REWRITE') {
+        return await this.executeRewriteFlow(analyzedIntent, request, llmCaller, startTime);
+      } else {
+        // CONTINUE 或 CREATE 使用原有流程
+        return await this.executeContinueFlow(analyzedIntent, request, llmCaller, startTime);
+      }
+  }
+
+  /**
+   * 执行校验流程（CHECK）
+   */
+  async executeCheckFlow(analyzedIntent, request, llmCaller, startTime) {
+      this.log('Executing CHECK flow');
+      
+      // 状态 1: 智能加载上下文
+      this.setState(AgentStates.LOAD_CONTEXT);
+      const memoryContext = await this.memory.loadContext(request.userRequest);
+      const context = await this.contextLoader.loadSmartContext({
+        intentType: 'CHECK',
+        targetChapter: analyzedIntent.target_chapter,
+        targetFile: analyzedIntent.target_file,
+        userRequest: request.userRequest,
+        memoryContext
+      });
+      
+      // 读取目标文件
+      let existingContent = '';
+      if (analyzedIntent.target_file) {
+        const filePath = this.resolveFilePath(analyzedIntent.target_file);
+        try {
+          existingContent = await fs.readFile(filePath, 'utf-8');
+          this.log('Target file read', { filePath, contentLength: existingContent.length });
+        } catch (error) {
+          throw new Error(`无法读取目标文件: ${analyzedIntent.target_file}`);
+        }
+      } else if (analyzedIntent.target_chapter) {
+        // 从章节文件管理器获取文件路径
+        const chapterFile = await this.chapterFileManager.getChapterFile(analyzedIntent.target_chapter);
+        if (chapterFile) {
+          existingContent = await fs.readFile(chapterFile.path, 'utf-8');
+          this.log('Chapter file read', { chapter: analyzedIntent.target_chapter });
+        }
+      }
+
+      if (!existingContent) {
+        throw new Error('未找到目标文件内容');
+      }
+
+      // 状态 2: 执行一致性校验（使用智能上下文）
+      this.setState(AgentStates.CHECK_CONSISTENCY);
+      this.addStep('check_consistency', '执行一致性校验');
+      
+      // 创建临时 intent（用于校验）
+      const tempIntent = {
+        goal: '校验文本一致性',
+        constraints: analyzedIntent.requirements || {}
+      };
+      
+      // 构建上下文提示词
+      const contextPrompt = this.contextLoader.buildContextPrompt(context, 'CHECK');
+      
+      // 增强上下文，包含文本上下文信息
+      const enhancedContext = {
+        ...context,
+        contextPrompt: this.contextLoader.buildContextPrompt(context, 'CHECK') // 用于校验时的提示词
+      };
+      
+      const checkResult = await this.checkConsistency(existingContent, tempIntent, enhancedContext, llmCaller);
+      
+      const executionTime = Date.now() - startTime;
+      this.statistics.successfulTasks++;
+      this.updateStatistics(executionTime);
+
+      return {
+        success: true,
+        text: existingContent, // 返回原文本
+        intent: tempIntent,
+        checkResult,
+        intent_analysis: analyzedIntent,
+        executionTime,
+        statistics: this.getTaskStatistics()
+      };
+  }
+
+  /**
+   * 执行重写流程（REWRITE）
+   */
+  async executeRewriteFlow(analyzedIntent, request, llmCaller, startTime) {
+      this.log('Executing REWRITE flow');
+      
+      // 状态 1: 智能加载上下文
+      this.setState(AgentStates.LOAD_CONTEXT);
+      const memoryContext = await this.memory.loadContext(request.userRequest);
+      const context = await this.contextLoader.loadSmartContext({
+        intentType: 'REWRITE',
+        targetChapter: analyzedIntent.target_chapter,
+        targetFile: analyzedIntent.target_file,
+        userRequest: request.userRequest,
+        memoryContext
+      });
+      
+      // 读取目标文件
+      let existingContent = '';
+      let targetFilePath = null;
+      
+      if (analyzedIntent.target_file) {
+        targetFilePath = this.resolveFilePath(analyzedIntent.target_file);
+        try {
+          existingContent = await fs.readFile(targetFilePath, 'utf-8');
+          this.log('Target file read for rewrite', { filePath: targetFilePath, contentLength: existingContent.length });
+        } catch (error) {
+          throw new Error(`无法读取目标文件: ${analyzedIntent.target_file}`);
+        }
+      } else if (analyzedIntent.target_chapter) {
+        const chapterFile = await this.chapterFileManager.getChapterFile(analyzedIntent.target_chapter);
+        if (chapterFile) {
+          targetFilePath = chapterFile.path;
+          existingContent = await fs.readFile(targetFilePath, 'utf-8');
+          this.log('Chapter file read for rewrite', { chapter: analyzedIntent.target_chapter });
+        }
+      }
+
+      if (!existingContent) {
+        throw new Error('未找到目标文件内容，无法执行重写');
+      }
+
+      // 状态 2: 规划意图（基于智能上下文和用户需求）
+      this.setState(AgentStates.PLAN_INTENT);
+      this.addStep('plan_intent', '规划重写意图');
+      
+      // 构建上下文提示词
+      const contextPrompt = this.contextLoader.buildContextPrompt(context, 'REWRITE');
+      
+      // 增强用户请求，包含智能上下文信息
+      const enhancedRequest = {
+        ...request,
+        userRequest: `${request.userRequest}\n\n${contextPrompt}`
+      };
+      
+      const intent = await this.planIntent(enhancedRequest, context, llmCaller);
+      intent.is_rewrite = true;
+      intent.original_content = existingContent;
+      intent.target_file_path = targetFilePath;
+      
+      this.log('Intent planned for rewrite', { intent });
+
+      // 状态 3: 生成重写版本
+      this.setState(AgentStates.WRITE_DRAFT);
+      this.addStep('write_draft', '生成重写版本');
+      
+      const draft = await ErrorHandler.withTimeout(
+        this.writeDraft(intent, context, llmCaller, null, existingContent),
+        6000000,
+        '生成重写版本超时'
+      );
+      
+      this.log('Rewrite draft generated', { draftLength: draft.text?.length || 0 });
+
+      // 状态 4: 一致性校验（使用智能上下文）
+      this.setState(AgentStates.CHECK_CONSISTENCY);
+      this.addStep('check_consistency', '校验重写版本');
+      
+      // 增强上下文，包含文本上下文信息
+      const enhancedContext = {
+        ...context,
+        contextPrompt: this.contextLoader.buildContextPrompt(context, 'REWRITE')
+      };
+      
+      let checkResult = await this.checkConsistency(draft.text, intent, enhancedContext, llmCaller);
+      let finalText = draft.text;
+      let rewriteCount = 0;
+      const maxRewrites = 2;
+
+      // 如果校验失败，进入重写循环
+      while (checkResult.status === 'fail' && rewriteCount < maxRewrites) {
+        rewriteCount++;
+        this.log('Rewriting', { attempt: rewriteCount, errors: checkResult.errors.length });
+
+        const rewritten = await this.rewrite(finalText, intent, checkResult.errors, enhancedContext, llmCaller);
+        finalText = rewritten.text;
+
+        checkResult = await this.checkConsistency(finalText, intent, enhancedContext, llmCaller);
+        this.log('Re-checked after rewrite', { status: checkResult.status });
+
+        const stillHasFatal = this.dslRuleEngine.hasFatalError(checkResult.errors || []);
+        if (checkResult.status === 'pass' && !stillHasFatal) {
+          break;
+        }
+      }
+
+      // 状态 5: 更新记忆（重写模式需要清理旧记忆）
+      if (analyzedIntent.target_chapter) {
+        this.addStep('update_memory', '更新记忆（清理旧记忆）');
+        
+        // 标记需要清理的章节
+        const memoryUpdateResult = await this.memoryUpdater.update(finalText, {
+          ...request,
+          userRequest: request.userRequest,
+          replace_chapter: analyzedIntent.target_chapter // 标记需要替换的章节
+        }, context, llmCaller);
+        
+        // 如果记忆更新失败，记录但不影响整体流程
+        if (!memoryUpdateResult.success) {
+          console.warn('记忆更新失败（不影响重写结果）:', memoryUpdateResult.error);
+        }
+      }
+
+      const executionTime = Date.now() - startTime;
+      this.statistics.successfulTasks++;
+      this.updateStatistics(executionTime);
+
+      return {
+        success: true,
+        text: finalText,
+        intent,
+        checkResult,
+        intent_analysis: analyzedIntent,
+        rewriteCount,
+        executionTime,
+        statistics: this.getTaskStatistics(),
+        target_file_path: targetFilePath
+      };
+  }
+
+  /**
+   * 执行续写/创建流程（CONTINUE/CREATE）
+   */
+  async executeContinueFlow(analyzedIntent, request, llmCaller, startTime) {
+      this.log('Executing CONTINUE/CREATE flow');
+      
+      // 状态 1: 智能加载上下文
+      this.setState(AgentStates.LOAD_CONTEXT);
+      const memoryContext = await this.memory.loadContext(request.userRequest);
+      const context = await this.contextLoader.loadSmartContext({
+        intentType: analyzedIntent.intent_type,
+        targetChapter: analyzedIntent.target_chapter,
+        targetFile: analyzedIntent.target_file,
+        userRequest: request.userRequest,
+        memoryContext
+      });
       this.log('Context loaded', { contextSize: JSON.stringify(context).length });
 
-      // 状态 1.5: 扫描章节文件（新增）
+      // 状态 1.5: 扫描章节文件
       this.setState(AgentStates.LOAD_CONTEXT);
       const scanResult = await this.scanChapters();
       this.log('Chapters scanned', { totalChapters: scanResult.totalChapters, latestChapter: scanResult.latestChapter });
 
-      // 状态 1.6: 分析已有章节（续写模式，新增）
+      // 状态 1.6: 分析已有章节（续写模式）
       let previousAnalyses = [];
       let chapterPlan = null;
-      const targetChapter = this.extractChapterNumber(request.userRequest);
+      const targetChapter = analyzedIntent.target_chapter || this.extractChapterNumber(request.userRequest);
       
       if (targetChapter && targetChapter > 1) {
         this.setState(AgentStates.LOAD_CONTEXT);
@@ -680,16 +945,37 @@ class AgentOrchestrator {
   }
 
   /**
-   * 状态 3: 生成初稿（支持章节规划控制）
+   * 解析文件路径
    */
-  async writeDraft(intent, context, llmCaller, chapterPlan = null) {
-    console.log('📝 开始生成初稿...');
+  resolveFilePath(fileName) {
+    if (!fileName) return null;
+    
+    // 如果是绝对路径，直接返回
+    if (path.isAbsolute(fileName)) {
+      return fileName;
+    }
+    
+    // 如果是相对路径，基于工作区根目录
+    return path.join(this.workspaceRoot, fileName);
+  }
+
+  /**
+   * 状态 3: 生成初稿（支持章节规划控制和重写模式）
+   * @param {Object} intent - 写作意图
+   * @param {Object} context - 上下文
+   * @param {Function} llmCaller - LLM 调用函数
+   * @param {Object} chapterPlan - 章节规划（可选）
+   * @param {string} existingContent - 现有内容（重写模式时提供）
+   */
+  async writeDraft(intent, context, llmCaller, chapterPlan = null, existingContent = null) {
+    const isRewrite = !!existingContent || intent.is_rewrite;
+    console.log(`📝 开始${isRewrite ? '重写' : '生成初稿'}...`);
 
     // 构建系统提示词（根据是否有章节规划调整）
-    let systemPrompt = `你是一个专业的小说写作助手，负责根据写作意图生成高质量的小说文本。
+    let systemPrompt = `你是一个专业的小说写作助手，负责根据写作意图${isRewrite ? '重写' : '生成'}高质量的小说文本。
 
 # 核心任务
-根据提供的写作意图（Intent）和上下文信息，生成符合要求的小说文本。`;
+根据提供的写作意图（Intent）和上下文信息，${isRewrite ? '重写现有文本' : '生成符合要求的小说文本'}。`;
 
     if (chapterPlan && chapterPlan.success) {
       systemPrompt += `
@@ -701,6 +987,18 @@ class AgentOrchestrator {
 3. **节奏控制**：文本的节奏必须符合规划的节奏曲线
 4. **密度控制**：信息密度必须符合规划的密度曲线
 5. **情节节点**：必须在指定位置包含规划的情节节点`;
+    }
+
+    // 如果是重写模式，添加重写要求
+    if (isRewrite) {
+      systemPrompt += `
+
+# 重写要求（重要）
+1. **保留核心内容**：保留原文本的核心情节和重要信息
+2. **按需求修改**：根据用户需求，只修改需要改进的部分
+3. **保持结构**：尽量保持原文本的整体结构和段落组织
+4. **风格一致**：保持与原文本相同的写作风格和叙事风格
+5. **自然过渡**：修改后的文本应该自然流畅，看不出修改痕迹`;
     }
 
     systemPrompt += `
@@ -720,7 +1018,23 @@ class AgentOrchestrator {
 - 保持段落结构，使用适当的换行`;
 
     // 构建用户提示词
-    let userPrompt = `# 写作意图
+    let userPrompt = '';
+
+    // 设定文件（优先显示，特别是前面几章）
+    if (context.text_context && context.text_context.settings && context.text_context.settings.length > 0) {
+      userPrompt += `# 基础设定（重要：请严格遵守这些设定）\n`;
+      for (const setting of context.text_context.settings) {
+        userPrompt += `\n## ${setting.file}\n`;
+        const maxLength = 2000;
+        const content = setting.content.length > maxLength 
+          ? setting.content.substring(0, maxLength) + '...' 
+          : setting.content;
+        userPrompt += `${content}\n`;
+      }
+      userPrompt += '\n';
+    }
+
+    userPrompt += `# 写作意图
 ${JSON.stringify(intent, null, 2)}
 
 # 上下文信息
@@ -730,6 +1044,14 @@ ${JSON.stringify({
   plot_context: context.plot_context || [],
   current_chapter: context.current_chapter || '未知章节'
 }, null, 2)}`;
+
+    // 如果是重写模式，添加现有内容
+    if (isRewrite && existingContent) {
+      userPrompt += `\n\n# 现有内容（需要重写）
+${existingContent.substring(0, 5000)}${existingContent.length > 5000 ? '...' : ''}
+
+请基于以上现有内容，根据写作意图进行重写。保留核心情节，只修改需要改进的部分。`;
+    }
 
     // 如果有关节规划，添加章节规划信息
     if (chapterPlan && chapterPlan.success) {

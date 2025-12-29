@@ -143,7 +143,23 @@ class IntentPlanner {
    * 构建用户提示词
    */
   buildUserPrompt(userRequest, context) {
-    let prompt = `# 用户需求\n${userRequest}\n\n`;
+    let prompt = '';
+
+    // 设定文件（优先显示，特别是前面几章）
+    if (context.text_context && context.text_context.settings && context.text_context.settings.length > 0) {
+      prompt += `# 基础设定（重要：请严格遵守这些设定）\n`;
+      for (const setting of context.text_context.settings) {
+        prompt += `\n## ${setting.file}\n`;
+        const maxLength = 2000;
+        const content = setting.content.length > maxLength 
+          ? setting.content.substring(0, maxLength) + '...' 
+          : setting.content;
+        prompt += `${content}\n`;
+      }
+      prompt += '\n';
+    }
+
+    prompt += `# 用户需求\n${userRequest}\n\n`;
 
     // 添加世界观信息
     if (context.world_rules) {

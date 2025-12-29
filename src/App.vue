@@ -248,6 +248,7 @@
            :agent-input="agent.agentInput.value"
            :is-loading="agent.isAgentLoading.value"
            :current-task="agent.currentTask.value"
+           :file-tree="fs.fileTree.value"
            @update:agentInput="(v) => (agent.agentInput.value = v)"
            @send="handleAgentSend"
            @cancel="handleAgentCancel"

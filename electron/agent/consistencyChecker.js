@@ -550,10 +550,66 @@ class ConsistencyChecker {
   }
 
   /**
-   * 构建校验提示词
+   * 构建校验提示词（使用智能上下文）
    */
   buildCheckPrompt(text, intent, context, ruleViolations) {
-    let prompt = `# 待校验的文本\n${text}\n\n`;
+    let prompt = '';
+
+    // 设定文件（优先显示，特别是前面几章）
+    if (context.text_context && context.text_context.settings && context.text_context.settings.length > 0) {
+      prompt += `# 基础设定（重要：请严格遵守这些设定）\n`;
+      for (const setting of context.text_context.settings) {
+        prompt += `\n## ${setting.file}\n`;
+        const maxLength = 2000;
+        const content = setting.content.length > maxLength 
+          ? setting.content.substring(0, maxLength) + '...' 
+          : setting.content;
+        prompt += `${content}\n`;
+      }
+      prompt += '\n';
+    }
+
+    prompt += `# 待校验的文本\n${text}\n\n`;
+
+    // 如果上下文包含智能加载的文本上下文，优先使用
+    if (context.contextPrompt) {
+      prompt += context.contextPrompt;
+      prompt += '\n';
+    } else if (context.text_context) {
+      // 使用智能上下文加载器构建的上下文
+      if (context.text_context.current) {
+        prompt += `# 当前${context.text_context.current.chapter ? `第${context.text_context.current.chapter}章` : '文件'}\n`;
+        prompt += `文件: ${context.text_context.current.file}\n`;
+        prompt += `内容长度: ${context.text_context.current.length} 字\n\n`;
+      }
+      
+      if (context.text_context.before && context.text_context.before.length > 0) {
+        prompt += `# 前文（共 ${context.text_context.before.length} 章）\n`;
+        for (const chapter of context.text_context.before.slice(0, 3)) {
+          prompt += `\n## 第${chapter.chapter}章（${chapter.length} 字）\n`;
+          prompt += `${chapter.preview}\n`;
+        }
+        prompt += '\n';
+      }
+      
+      if (context.text_context.after && context.text_context.after.length > 0) {
+        prompt += `# 后文（共 ${context.text_context.after.length} 章）\n`;
+        for (const chapter of context.text_context.after.slice(0, 2)) {
+          prompt += `\n## 第${chapter.chapter}章（${chapter.length} 字）\n`;
+          prompt += `${chapter.preview}\n`;
+        }
+        prompt += '\n';
+      }
+      
+      if (context.text_context.related && context.text_context.related.length > 0) {
+        prompt += `# 相关章节（共 ${context.text_context.related.length} 章）\n`;
+        for (const chapter of context.text_context.related.slice(0, 2)) {
+          prompt += `\n## 第${chapter.chapter}章（匹配度: ${chapter.matchScore}）\n`;
+          prompt += `${chapter.preview}\n`;
+        }
+        prompt += '\n';
+      }
+    }
 
     // 添加写作意图
     if (intent) {
@@ -597,7 +653,7 @@ class ConsistencyChecker {
       prompt += '\n';
     }
 
-    prompt += `# 任务\n请仔细分析文本，检查是否存在其他问题。返回纯 JSON 格式的校验结果。`;
+    prompt += `# 任务\n请仔细分析文本，结合前后文和相关章节，检查是否存在其他问题。返回纯 JSON 格式的校验结果。`;
 
     return prompt;
   }

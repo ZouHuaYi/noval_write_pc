@@ -133,18 +133,48 @@
     </div>
 
     <!-- 输入区域 -->
-    <div class="border-t border-slate-800 p-3 space-y-2">
-      <textarea
-        v-model="localInput"
-        :disabled="isLoading"
-        rows="3"
-        class="w-full resize-none rounded bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-50"
-        placeholder="描述你想要做的修改，例如：修正人物性格、增加情节伏笔、优化对话描写等..."
-        @keydown.ctrl.enter="handleSend"
-      ></textarea>
+    <div class="border-t border-slate-800 p-3 space-y-2 relative">
+      <div class="relative">
+        <textarea
+          ref="inputRef"
+          v-model="localInput"
+          :disabled="isLoading"
+          rows="3"
+          class="w-full resize-none rounded bg-slate-900 border border-slate-700 px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-50"
+          placeholder="描述你想要做的修改，例如：修正人物性格、增加情节伏笔、优化对话描写等...&#10;提示：输入 @ 可以引用文件，例如：@第001章.txt 优化这段对话"
+          @keydown="handleKeyDown"
+          @input="handleInput"
+        ></textarea>
+        
+        <!-- @文件 下拉菜单 -->
+        <div
+          v-if="showFileSuggestions && filteredFiles.length > 0"
+          class="absolute bottom-full left-0 right-0 mb-1 max-h-48 overflow-auto bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-50"
+        >
+          <div
+            v-for="(file, index) in filteredFiles"
+            :key="file.id"
+            class="px-3 py-2 text-xs cursor-pointer hover:bg-emerald-900/30 transition-colors"
+            :class="{
+              'bg-emerald-900/30': selectedFileIndex === index
+            }"
+            @click="selectFile(file)"
+            @mouseenter="selectedFileIndex = index"
+          >
+            <div class="flex items-center gap-2">
+              <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+              </svg>
+              <span class="text-slate-200 font-mono">{{ file.name }}</span>
+              <span v-if="file.relativePath" class="text-slate-500 text-[10px] ml-auto">{{ file.relativePath }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      
       <div class="flex items-center justify-between">
         <div class="text-[10px] text-slate-500">
-          💡 提示：描述要具体明确
+          💡 提示：输入 @ 可以引用文件
         </div>
         <button
           v-if="!isLoading"
@@ -167,14 +197,16 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import type { AgentMessage, AgentTask, FileChange } from '../composables/useAgent';
+import { getAllFiles, type TreeNode } from '../utils/fileTree';
 
 const props = defineProps<{
   agentMessages: AgentMessage[];
   agentInput: string;
   isLoading: boolean;
   currentTask: AgentTask | null;
+  fileTree?: TreeNode[]; // 文件树数据
 }>();
 
 const emit = defineEmits<{
@@ -188,6 +220,34 @@ const emit = defineEmits<{
 
 const localInput = ref(props.agentInput);
 const messageListRef = ref<HTMLElement | null>(null);
+const inputRef = ref<HTMLTextAreaElement | null>(null);
+
+// @文件 相关状态
+const showFileSuggestions = ref(false);
+const selectedFileIndex = ref(0);
+const atPosition = ref(0); // @ 符号在输入框中的位置
+
+// 获取所有文件列表
+const allFiles = computed(() => {
+  if (!props.fileTree || props.fileTree.length === 0) return [];
+  return getAllFiles(props.fileTree);
+});
+
+// 根据输入过滤文件
+const filteredFiles = computed(() => {
+  if (!showFileSuggestions.value) return [];
+  
+  const textAfterAt = localInput.value.substring(atPosition.value + 1);
+  const searchText = textAfterAt.toLowerCase().trim();
+  
+  if (!searchText) {
+    return allFiles.value.slice(0, 10); // 默认显示前10个文件
+  }
+  
+  return allFiles.value
+    .filter(file => file.name.toLowerCase().includes(searchText))
+    .slice(0, 10);
+});
 
 watch(() => props.agentInput, (newVal) => {
   localInput.value = newVal;
@@ -197,8 +257,97 @@ watch(localInput, (newVal) => {
   emit('update:agentInput', newVal);
 });
 
+// 处理输入事件，检测 @ 符号
+const handleInput = () => {
+  const cursorPos = inputRef.value?.selectionStart || 0;
+  const textBeforeCursor = localInput.value.substring(0, cursorPos);
+  
+  // 查找最后一个 @ 符号
+  const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+  
+  if (lastAtIndex !== -1) {
+    // 检查 @ 后面是否有空格或换行（如果有，说明 @ 已经结束）
+    const textAfterAt = textBeforeCursor.substring(lastAtIndex + 1);
+    if (!textAfterAt.includes(' ') && !textAfterAt.includes('\n')) {
+      // 显示文件建议
+      atPosition.value = lastAtIndex;
+      showFileSuggestions.value = true;
+      selectedFileIndex.value = 0;
+      return;
+    }
+  }
+  
+  // 隐藏文件建议
+  showFileSuggestions.value = false;
+};
+
+// 处理键盘事件
+const handleKeyDown = (e: KeyboardEvent) => {
+  // Ctrl+Enter 发送
+  if (e.ctrlKey && e.key === 'Enter') {
+    e.preventDefault();
+    handleSend();
+    return;
+  }
+  
+  // 如果显示文件建议，处理上下箭头和回车
+  if (showFileSuggestions.value && filteredFiles.value.length > 0) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      selectedFileIndex.value = Math.min(selectedFileIndex.value + 1, filteredFiles.value.length - 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      selectedFileIndex.value = Math.max(selectedFileIndex.value - 1, 0);
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      const selectedFile = filteredFiles.value[selectedFileIndex.value];
+      if (selectedFile) {
+        selectFile(selectedFile);
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      showFileSuggestions.value = false;
+    }
+  }
+};
+
+// 选择文件
+const selectFile = (file: TreeNode) => {
+  if (!inputRef.value) return;
+  
+  const textBeforeAt = localInput.value.substring(0, atPosition.value);
+  const cursorPos = inputRef.value.selectionStart || 0;
+  const textAfterCursor = localInput.value.substring(cursorPos);
+  
+  // 替换 @ 后面的内容为文件名
+  const newText = textBeforeAt + `@${file.name} ` + textAfterCursor;
+  localInput.value = newText;
+  
+  // 设置光标位置到文件名后面
+  nextTick(() => {
+    const newCursorPos = atPosition.value + file.name.length + 2; // +2 是 @ 和空格
+    inputRef.value?.setSelectionRange(newCursorPos, newCursorPos);
+    inputRef.value?.focus();
+  });
+  
+  showFileSuggestions.value = false;
+};
+
+// 点击外部关闭文件建议
+const handleClickOutside = (e: MouseEvent) => {
+  if (showFileSuggestions.value && !inputRef.value?.contains(e.target as Node)) {
+    showFileSuggestions.value = false;
+  }
+};
+
+// 监听点击事件
+if (typeof window !== 'undefined') {
+  window.addEventListener('click', handleClickOutside);
+}
+
 const handleSend = () => {
   if (!localInput.value.trim() || props.isLoading) return;
+  showFileSuggestions.value = false; // 关闭文件建议
   emit('send');
 };
 

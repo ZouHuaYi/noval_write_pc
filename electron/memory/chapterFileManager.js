@@ -122,6 +122,27 @@ class ChapterFileManager {
   }
 
   /**
+   * 获取章节文件路径（用于重写和校验）
+   */
+  async getChapterFile(chapterNumber) {
+    const chapterInfo = this.getChapterInfo(chapterNumber);
+    if (!chapterInfo) {
+      return null;
+    }
+    
+    // chapterInfo 可能包含 path 字段，或者需要构建路径
+    if (chapterInfo.path) {
+      return { path: chapterInfo.path, name: chapterInfo.name };
+    } else if (chapterInfo.name) {
+      // 构建完整路径
+      const filePath = path.join(this.workspaceRoot, chapterInfo.name);
+      return { path: filePath, name: chapterInfo.name };
+    }
+    
+    return null;
+  }
+
+  /**
    * 获取分析结果缓存路径
    */
   getAnalysisCachePath(chapterNumber) {

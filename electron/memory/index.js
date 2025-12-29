@@ -441,7 +441,23 @@ class MemoryManager {
           }
         }
 
+        // 处理删除的角色状态（如果章节被重写）
+        if (updates.character_updates._delete_by_chapter) {
+          for (const chapterNum of updates.character_updates._delete_by_chapter) {
+            const allChars = this.character.getAllCharacters();
+            for (const char of allChars) {
+              await this.character.removeStateHistoryByChapter(char.name, chapterNum);
+              await this.character.removeHistoryByChapter(char.name, chapterNum);
+            }
+            console.log(`     ✅ 已清理第${chapterNum}章的所有角色状态历史`);
+            results.character = true;
+          }
+        }
+
         for (const [charName, stateUpdates] of Object.entries(updates.character_updates)) {
+          // 跳过特殊字段
+          if (charName.startsWith('_')) continue;
+          
           try {
             // 先检查角色是否存在
             const existing = this.character.getCharacter(charName);
@@ -455,13 +471,15 @@ class MemoryManager {
               });
             }
             
-            // 更新角色状态
+            // 更新角色状态（如果章节被重写，先删除旧状态）
+            const chapter = chapterMap[charName] || updates.chapter || null;
             await this.character.updateCharacterState(
               charName, 
               stateUpdates,
               {
-                chapter: chapterMap[charName] || updates.chapter || null,
-                source: 'memory_updater'
+                chapter: chapter,
+                source: 'memory_updater',
+                replaceChapter: updates.replace_chapter || null // 如果提供，会先删除该章节的旧状态
               }
             );
             console.log(`     ✅ 已更新角色: ${charName}`);
@@ -487,9 +505,40 @@ class MemoryManager {
         }
       }
 
-      // 更新剧情
+      // 更新剧情（支持删除、更新、新增）
       if (updates.plot_updates) {
         console.log(`   📖 更新剧情信息...`);
+        
+        // 处理删除的事件（如果章节被重写，可能需要删除旧事件）
+        if (updates.plot_updates.deleted_events) {
+          console.log(`     - 删除剧情事件: ${updates.plot_updates.deleted_events.length} 个`);
+          for (const eventId of updates.plot_updates.deleted_events) {
+            await this.plot.removeCompletedEvent(eventId);
+            console.log(`       ✅ 已删除事件: ${eventId}`);
+          }
+          results.plot = true;
+        }
+        
+        // 根据章节删除事件（重写章节时使用）
+        if (updates.plot_updates.delete_events_by_chapter) {
+          for (const chapterNum of updates.plot_updates.delete_events_by_chapter) {
+            const removedCount = await this.plot.removeEventsByChapter(chapterNum);
+            console.log(`       ✅ 已删除第${chapterNum}章的 ${removedCount} 个事件`);
+          }
+          results.plot = true;
+        }
+        
+        // 处理更新的事件
+        if (updates.plot_updates.updated_events) {
+          console.log(`     - 更新剧情事件: ${updates.plot_updates.updated_events.length} 个`);
+          for (const event of updates.plot_updates.updated_events) {
+            await this.plot.updateCompletedEvent(event.id, event);
+            console.log(`       ✅ 已更新事件: ${event.name || event.id}`);
+          }
+          results.plot = true;
+        }
+        
+        // 处理新增的事件
         if (updates.plot_updates.completed_events) {
           console.log(`     - 添加剧情事件: ${updates.plot_updates.completed_events.length} 个`);
           for (const event of updates.plot_updates.completed_events) {

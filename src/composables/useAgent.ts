@@ -5,6 +5,7 @@
  */
 
 import { ref, type Ref } from 'vue';
+import { getAllFiles } from '../utils/fileTree';
 
 export interface AgentMessage {
   id: number;
@@ -100,8 +101,17 @@ export function useAgent(
 
   /**
    * 从用户请求中提取目标文件
+   * 优先提取 @文件名 格式的引用
    */
   const extractTargetFile = (request: string): string => {
+    // 优先匹配 @文件名 格式（例如：@第001章.txt）
+    const atFileMatch = request.match(/@([^\s@]+)/);
+    if (atFileMatch) {
+      const fileName = atFileMatch[1].trim();
+      // 移除 @ 符号，返回文件名
+      return fileName;
+    }
+
     // 匹配 "第X章" 或 "第X-Y章"
     const chapterMatch = request.match(/第\s*(\d+)(?:[-到]\s*(\d+))?\s*章/);
     if (chapterMatch) {
@@ -200,9 +210,13 @@ export function useAgent(
       };
       agentMessages.value.push(contextMsg);
 
+      // 提取目标文件（如果有 @文件名 引用）
+      const targetFileName = extractTargetFile(userRequest);
+      
       // 步骤 2-6: 调用 Novel Agent 执行
       const result = await window.api.novelAgent.execute({
-        userRequest: userRequest
+        userRequest: userRequest,
+        targetFile: targetFileName || undefined // 如果有目标文件，传递给 Agent
       });
 
       if (!result.success) {
@@ -214,15 +228,44 @@ export function useAgent(
 
       // 如果返回了文本，需要创建或修改文件
       if (result.text) {
-        // 从用户请求中提取目标文件信息
-        const targetFile = extractTargetFile(userRequest);
-        const action = determineAction(userRequest, targetFile);
+        // 优先使用 result 中的 target_file_path（重写模式）
+        let targetFilePath = result.target_file_path;
+        let finalTargetFileName = targetFileName;
+        
+        if (!targetFilePath) {
+          // 如果没有，使用之前提取的目标文件名
+          const action = determineAction(userRequest, targetFileName);
+          
+          // 构建完整文件路径
+          targetFilePath = targetFileName;
+          if (workspaceRoot.value && !targetFilePath.startsWith(workspaceRoot.value)) {
+            // 如果文件名不包含完整路径，需要从文件树中查找
+            const allFiles = fileTree.value ? getAllFiles(fileTree.value) : [];
+            const matchedFile = allFiles.find(f => f.name === targetFileName || f.relativePath === targetFileName);
+            if (matchedFile && matchedFile.path) {
+              targetFilePath = matchedFile.path;
+              finalTargetFileName = matchedFile.name;
+            } else {
+              // 如果找不到，使用相对路径
+              targetFilePath = `${workspaceRoot.value}/${targetFileName}`;
+            }
+          }
+        } else {
+          // 从完整路径中提取文件名
+          const pathParts = targetFilePath.split(/[/\\]/);
+          finalTargetFileName = pathParts[pathParts.length - 1] || targetFileName;
+        }
+
+        // 判断操作类型（根据意图分析结果）
+        const intentType = result.intent_analysis?.intent_type;
+        const action = intentType === 'REWRITE' || intentType === 'CHECK' ? 'modify' : 
+                      (intentType === 'CREATE' ? 'create' : determineAction(userRequest, targetFileName));
 
         if (action === 'create') {
           changes.push({
             id: `change_${nextChangeId++}`,
-            filePath: targetFile,
-            fileName: targetFile,
+            filePath: targetFilePath,
+            fileName: finalTargetFileName,
             action: 'create',
             newContent: result.text,
             description: result.intent?.goal || '创建新章节',
@@ -230,16 +273,21 @@ export function useAgent(
           });
         } else {
           // modify 操作需要提供 oldContent 和 newContent
-          // 这里需要读取原文件内容
-          const oldContent = await readFile(targetFile);
+          // 重写模式时，result 可能包含 original_content
+          let oldContent = result.intent?.original_content;
+          if (!oldContent) {
+            // 如果没有，读取原文件内容
+            oldContent = await readFile(targetFilePath) || '';
+          }
+          
           changes.push({
             id: `change_${nextChangeId++}`,
-            filePath: targetFile,
-            fileName: targetFile,
+            filePath: targetFilePath,
+            fileName: finalTargetFileName,
             action: 'modify',
-            oldContent: oldContent || '',
+            oldContent: oldContent,
             newContent: result.text,
-            description: result.intent?.goal || '修改文本',
+            description: result.intent?.goal || (intentType === 'REWRITE' ? '重写章节' : '修改文本'),
             status: 'pending'
           });
         }
