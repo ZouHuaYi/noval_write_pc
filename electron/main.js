@@ -1348,28 +1348,54 @@ ${similarChunks.map((chunk, idx) =>
         return { success: false, error: '未配置 LLM，无法更新记忆' };
       }
 
-      // 创建 LLM 调用函数
-      const llmCaller = async (messages, options = {}) => {
-        const response = await fetch(`${llmConfig.baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${llmConfig.apiKey}`
-          },
-          body: JSON.stringify({
-            model: llmConfig.model,
-            messages: messages,
-            temperature: options.temperature || 0.7,
-            max_tokens: options.max_tokens || 2000
-          })
-        });
+      // 创建 LLM 调用函数（符合 MemoryUpdater 期望的格式）
+      const llmCaller = async ({ systemPrompt, userPrompt, temperature = 0.7, maxTokens = 2000 }) => {
+        try {
+          const messages = [];
+          if (systemPrompt) {
+            messages.push({ role: 'system', content: systemPrompt });
+          }
+          if (userPrompt) {
+            messages.push({ role: 'user', content: userPrompt });
+          }
 
-        if (!response.ok) {
-          throw new Error(`LLM API 错误: ${response.statusText}`);
+          const response = await fetch(`${llmConfig.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${llmConfig.apiKey}`
+            },
+            body: JSON.stringify({
+              model: llmConfig.model,
+              messages: messages,
+              temperature: temperature,
+              max_tokens: maxTokens
+            })
+          });
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            console.error('LLM API 错误响应:', response.status, errorText);
+            return { 
+              success: false, 
+              error: `LLM API 错误: ${response.statusText} (${response.status})` 
+            };
+          }
+
+          const data = await response.json();
+          const content = data.choices[0]?.message?.content || '';
+          
+          return { 
+            success: true, 
+            response: content 
+          };
+        } catch (error) {
+          console.error('LLM 调用异常:', error);
+          return { 
+            success: false, 
+            error: error.message || 'LLM 调用失败' 
+          };
         }
-
-        const data = await response.json();
-        return data.choices[0]?.message?.content || '';
       };
 
       // 加载上下文（loadContext 期望接收字符串，不是对象）
@@ -1429,13 +1455,41 @@ ${similarChunks.map((chunk, idx) =>
         return { success: false, error: '未配置 LLM，无法分析章节' };
       }
 
-      // 读取文件内容
+      // 读取文件内容（添加重试机制，处理文件刚创建时可能未完全写入的情况）
       const fs = require('fs');
-      if (!fs.existsSync(filePath)) {
-        return { success: false, error: '文件不存在' };
+      let content = '';
+      let retryCount = 0;
+      const maxRetries = 5;
+      const retryDelay = 200; // 200ms
+
+      while (retryCount < maxRetries) {
+        if (!fs.existsSync(filePath)) {
+          if (retryCount < maxRetries - 1) {
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+            retryCount++;
+            continue;
+          } else {
+            return { success: false, error: '文件不存在' };
+          }
+        }
+
+        try {
+          content = fs.readFileSync(filePath, 'utf-8');
+          if (content && content.trim().length > 0) {
+            break; // 成功读取到内容
+          }
+        } catch (err) {
+          console.warn(`读取文件失败 (${retryCount + 1}/${maxRetries}):`, err.message);
+        }
+
+        if (retryCount < maxRetries - 1) {
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          retryCount++;
+        } else {
+          return { success: false, error: '文件内容为空或无法读取' };
+        }
       }
 
-      const content = fs.readFileSync(filePath, 'utf-8');
       if (!content || content.trim().length === 0) {
         return { success: false, error: '文件内容为空' };
       }
@@ -1472,23 +1526,38 @@ ${similarChunks.map((chunk, idx) =>
         llmConfig
       );
 
-      // 提取章节信息并更新记忆
-      const extracted = await extractor.extractFromChapter(content, chapterNumber, filePath);
-      if (extracted) {
-        await extractor.updateMemoryFromChapter(extracted, chapterNumber);
-        console.log(`✅ 章节分析完成: 第${chapterNumber}章`);
-        // 只返回可序列化的摘要信息，避免 IPC 克隆错误
-        return { 
-          success: true, 
-          chapterNumber,
-          summary: {
-            characters_count: extracted.characters?.length || 0,
-            plot_events_count: extracted.plot_events?.length || 0,
-            foreshadows_count: extracted.foreshadows?.length || 0
+      // 提取章节信息并更新记忆（extractFromChapter 内部已经调用了 updateMemoryFromChapter）
+      try {
+        const extracted = await extractor.extractFromChapter(content, chapterNumber, filePath);
+        if (extracted) {
+          console.log(`✅ 章节分析完成: 第${chapterNumber}章`);
+          
+          // 更新文件状态，标记为已处理（避免下次刷新时重新扫描）
+          if (extractor.fileStateManager) {
+            extractor.fileStateManager.updateFileState(filePath, {
+              type: 'chapter',
+              chapter: chapterNumber,
+              extracted: true
+            });
+            console.log(`📝 已更新文件状态: ${filePath}`);
           }
-        };
-      } else {
-        return { success: false, error: '章节提取失败' };
+          
+          // 只返回可序列化的摘要信息，避免 IPC 克隆错误
+          return { 
+            success: true, 
+            chapterNumber,
+            summary: {
+              characters_count: extracted.characters?.length || 0,
+              plot_events_count: extracted.plot_events?.length || 0,
+              foreshadows_count: extracted.foreshadows?.length || 0
+            }
+          };
+        } else {
+          return { success: false, error: '章节提取失败：返回结果为空' };
+        }
+      } catch (extractError) {
+        console.error(`❌ 章节提取异常: 第${chapterNumber}章`, extractError);
+        return { success: false, error: extractError.message || '章节提取失败' };
       }
     } catch (err) {
       console.error('❌ 分析章节失败:', err);

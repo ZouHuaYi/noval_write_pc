@@ -599,9 +599,14 @@ ${limitedContent}
 
       // 更新记忆系统
       await this.updateMemoryFromChapter(extracted, chapterNumber);
+      
+      // 返回提取结果
+      return extracted;
 
     } catch (error) {
       console.error(`❌ LLM 解析章节失败: ${filename}`, error.message);
+      // 抛出错误，让调用者知道失败原因
+      throw new Error(`章节提取失败: ${error.message}`);
     }
   }
 
