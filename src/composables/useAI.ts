@@ -32,6 +32,7 @@ export function useAI(
   const consistencySelection = ref<any>(null);
 
   let nextMsgId = 1;
+  let chatAbortController: AbortController | null = null;
 
   // 文本优化（润色、扩写、精简、续写）
   const optimizeText = async (
@@ -402,6 +403,15 @@ ${text}
     return `[为保持聚焦，仅展示最近 ${maxChars} 字内容]\n\n${contextText}`;
   };
 
+  // Chat 取消
+  const cancelChat = () => {
+    if (chatAbortController) {
+      chatAbortController.abort();
+      chatAbortController = null;
+    }
+    isChatLoading.value = false;
+  };
+
   // Chat 发送消息
   const sendChat = async (
     currentFile: TreeNode | null,
@@ -413,6 +423,10 @@ ${text}
       showAlert('LLM API 不可用，请重启 Electron', '错误', 'danger');
       return;
     }
+
+    // 创建新的 AbortController
+    chatAbortController = new AbortController();
+    const signal = chatAbortController.signal;
 
     const fullText = getEditorContent();
     const selection = getEditorSelection();
@@ -451,11 +465,21 @@ ${text}
         { role: 'user', content: userQuestion }
       ];
 
+      // 检查是否已取消
+      if (signal.aborted) {
+        throw new Error('用户取消了操作');
+      }
+
       const result = await window.api.llm.chat(
         selectedModelId.value,
         llmMessages,
         { temperature: 0.7, maxTokens: 2000 }
       );
+
+      // 再次检查是否已取消
+      if (signal.aborted) {
+        throw new Error('用户取消了操作');
+      }
 
       if (!result.success || !result.response) {
         throw new Error(result.error || '调用 LLM API 失败');
@@ -486,6 +510,17 @@ ${text}
         focusEditor();
       }
     } catch (error: any) {
+      // 如果是用户取消，不显示错误提示
+      if (error.message === '用户取消了操作' || signal.aborted) {
+        console.log('用户取消了 Chat 操作');
+        // 移除用户消息
+        if (messages.value[messages.value.length - 1]?.id === userMsg.id) {
+          messages.value.pop();
+        }
+        chatInput.value = userQuestion;
+        return;
+      }
+      
       console.error('LLM 调用失败:', error);
       showAlert(`LLM 调用失败：${error.message}`, '错误', 'danger');
       
@@ -496,6 +531,7 @@ ${text}
       chatInput.value = userQuestion;
     } finally {
       isChatLoading.value = false;
+      chatAbortController = null;
     }
   };
 
@@ -577,6 +613,7 @@ ${text}
     checkConsistency,
     fixConsistency,
     sendChat,
+    cancelChat,
     deleteMessage,
     loadPromptFile
   };

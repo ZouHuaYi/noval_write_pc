@@ -59,6 +59,44 @@ export function useAgent(
   let nextAgentMsgId = 1;
   let nextTaskId = 1;
   let nextChangeId = 1;
+  
+  // 用于取消 Agent 执行的引用
+  let novelAgentRef: any = null;
+
+  /**
+   * 取消 Agent 执行
+   */
+  const cancelAgent = async () => {
+    if (novelAgentRef && novelAgentRef.cancelTask) {
+      try {
+        await novelAgentRef.cancelTask();
+        console.log('✅ Agent 执行已取消');
+      } catch (error: any) {
+        console.error('取消 Agent 执行失败:', error);
+      }
+    }
+    isAgentLoading.value = false;
+    
+    // 添加取消消息
+    const cancelMsg: AgentMessage = {
+      id: nextAgentMsgId++,
+      role: 'system',
+      content: '⚠️ 用户取消了 Agent 执行',
+      timestamp: Date.now()
+    };
+    agentMessages.value.push(cancelMsg);
+    
+    if (currentTask.value) {
+      currentTask.value.status = 'failed';
+    }
+  };
+
+  /**
+   * 设置 Novel Agent 引用（用于取消功能）
+   */
+  const setNovelAgentRef = (ref: any) => {
+    novelAgentRef = ref;
+  };
 
   /**
    * 从用户请求中提取目标文件
@@ -429,6 +467,8 @@ export function useAgent(
     rejectFileChange, // 别名
     applyAllChanges,
     clearAgentHistory, // 别名
-    resetAgent
+    resetAgent,
+    cancelAgent,
+    setNovelAgentRef
   };
 }

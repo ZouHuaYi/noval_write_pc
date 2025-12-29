@@ -147,11 +147,19 @@
           💡 提示：描述要具体明确
         </div>
         <button
+          v-if="!isLoading"
           class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-xs text-white disabled:opacity-50 disabled:cursor-not-allowed"
-          :disabled="!localInput.trim() || isLoading"
+          :disabled="!localInput.trim()"
           @click="handleSend"
         >
-          {{ isLoading ? '分析中...' : '发送 (Ctrl+Enter)' }}
+          发送 (Ctrl+Enter)
+        </button>
+        <button
+          v-else
+          class="px-3 py-1.5 rounded bg-rose-600 hover:bg-rose-500 text-xs text-white"
+          @click="handleCancel"
+        >
+          停止
         </button>
       </div>
     </div>
@@ -172,6 +180,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:agentInput', value: string): void;
   (e: 'send'): void;
+  (e: 'cancel'): void;
   (e: 'clearHistory'): void;
   (e: 'showDiff', change: FileChange): void;
   (e: 'applyAllChanges'): void;
@@ -191,6 +200,10 @@ watch(localInput, (newVal) => {
 const handleSend = () => {
   if (!localInput.value.trim() || props.isLoading) return;
   emit('send');
+};
+
+const handleCancel = () => {
+  emit('cancel');
 };
 
 // 自动滚动到底部

@@ -194,7 +194,7 @@ async function searchSimilarChunks(queryEmbedding, topK = 5) {
         filePath: file_path,
         chunkIndex: chunk_index,
         text: chunk_text,
-        similarity: similarity ? similarity.toFixed(4) : 0
+        similarity: similarity.toFixed(4)
       }));
   } catch (err) {
     console.error('搜索相似文本块失败:', err);
@@ -227,6 +227,72 @@ function walkDirForAllFiles(dir, results = []) {
     console.error('Error reading directory:', dir, err);
   }
   return results;
+}
+
+// 检查并创建 prompt.md 文件（如果不存在相关文件）
+async function ensurePromptFile(workspaceRoot) {
+  try {
+    // 检查是否存在以下文件之一：prompt.md、提示.md、设定.md、世界观.md
+    const targetFiles = ['prompt.md', '提示.md', '设定.md', '世界观.md'];
+    
+    // 只检查根目录下的文件（不递归）
+    const entries = fs.readdirSync(workspaceRoot, { withFileTypes: true });
+    const hasPromptFile = entries.some(entry => {
+      if (!entry.isFile()) return false;
+      const fileName = entry.name.toLowerCase();
+      return targetFiles.some(target => fileName === target.toLowerCase());
+    });
+    
+    // 如果不存在任何相关文件，创建 prompt.md
+    if (!hasPromptFile) {
+      const promptFilePath = path.join(workspaceRoot, 'prompt.md');
+      const promptTemplate = `# 创作提示与设定
+
+## 世界观设定
+
+在这里描述你的世界观设定，包括：
+- 时代背景
+- 地理环境
+- 社会结构
+- 特殊规则或设定
+
+## 人物设定
+
+在这里描述主要人物的设定，包括：
+- 姓名、年龄、外貌
+- 性格特点
+- 背景故事
+- 能力或特长
+
+## 故事风格
+
+在这里描述你希望的故事风格，包括：
+- 叙事风格（第一人称/第三人称等）
+- 语言风格（正式/轻松/诗意等）
+- 情节节奏（快节奏/慢节奏等）
+
+## 创作要求
+
+在这里列出你的创作要求，例如：
+- 避免使用某些词汇
+- 保持某种特定的氛围
+- 注意某些细节的一致性
+
+## 其他说明
+
+在这里添加其他需要说明的内容。
+`;
+      
+      await fs.promises.writeFile(promptFilePath, promptTemplate, 'utf-8');
+      console.log(`已创建 prompt.md 文件: ${promptFilePath}`);
+      return true;
+    }
+    
+    return false;
+  } catch (err) {
+    console.error('检查或创建 prompt.md 文件失败:', err);
+    return false;
+  }
 }
 
 function createWindow() {
@@ -317,6 +383,10 @@ app.whenReady().then(() => {
 
     const rootDir = result.filePaths[0];
     const rootName = path.basename(rootDir);
+    
+    // 检查并创建 prompt.md 文件（如果不存在相关文件）
+    await ensurePromptFile(rootDir);
+    
     const items = walkDirForAllFiles(rootDir);
 
     const files = items.map((item) => {
@@ -620,6 +690,10 @@ app.whenReady().then(() => {
       
       const rootDir = workspacePath;
       const rootName = path.basename(rootDir);
+      
+      // 检查并创建 prompt.md 文件（如果不存在相关文件）
+      await ensurePromptFile(rootDir);
+      
       const items = walkDirForAllFiles(rootDir);
 
       const files = items.map((item) => {
@@ -1298,12 +1372,8 @@ ${similarChunks.map((chunk, idx) =>
         return data.choices[0]?.message?.content || '';
       };
 
-      // 加载上下文
-      const context = await currentMemory.loadContext({
-        userRequest: userRequest || '',
-        mentionedCharacters: currentMemory.extractMentionedCharacters(userRequest || ''),
-        recentChapters: 3
-      });
+      // 加载上下文（loadContext 期望接收字符串，不是对象）
+      const context = await currentMemory.loadContext(userRequest || '');
 
       // 使用 MemoryUpdater 更新记忆
       const MemoryUpdater = require('./agent/memoryUpdater');

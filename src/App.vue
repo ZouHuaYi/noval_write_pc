@@ -222,37 +222,39 @@
           </button>
         </div>
 
-        <!-- Chat 面板 -->
-        <ChatPanel
-          v-show="rightPanelMode === 'chat'"
-          ref="chatPanelRef"
-          v-model="ai.chatInput.value"
-          :messages="ai.messages.value"
-          :mode="ai.chatMode.value"
-          :insert-mode="ai.insertMode.value"
-          :is-loading="ai.isChatLoading.value"
-          :selected-model="ai.selectedModelId.value"
-          :has-prompt-file="!!ai.promptFileContent.value"
-          @update:mode="(v) => (ai.chatMode.value = v)"
-          @update:insertMode="(v) => (ai.insertMode.value = v)"
-          @update:selectedModel="(v) => (ai.selectedModelId.value = v)"
-          @send="handleSendChat"
-          @delete-message="ai.deleteMessage"
-        />
+         <!-- Chat 面板 -->
+         <ChatPanel
+           v-show="rightPanelMode === 'chat'"
+           ref="chatPanelRef"
+           v-model="ai.chatInput.value"
+           :messages="ai.messages.value"
+           :mode="ai.chatMode.value"
+           :insert-mode="ai.insertMode.value"
+           :is-loading="ai.isChatLoading.value"
+           :selected-model="ai.selectedModelId.value"
+           :has-prompt-file="!!ai.promptFileContent.value"
+           @update:mode="(v) => (ai.chatMode.value = v)"
+           @update:insertMode="(v) => (ai.insertMode.value = v)"
+           @update:selectedModel="(v) => (ai.selectedModelId.value = v)"
+           @send="handleSendChat"
+           @cancel="handleChatCancel"
+           @delete-message="ai.deleteMessage"
+         />
 
-        <!-- Agent 面板（新版 Novel Agent） -->
-        <AgentPanel
-          v-show="rightPanelMode === 'agent'"
-          :agent-messages="agent.agentMessages.value"
-          :agent-input="agent.agentInput.value"
-          :is-loading="agent.isAgentLoading.value"
-          :current-task="agent.currentTask.value"
-          @update:agentInput="(v) => (agent.agentInput.value = v)"
-          @send="handleAgentSend"
-          @clear-history="agent.clearAgentHistory"
-          @show-diff="handleShowDiff"
-          @apply-all-changes="handleApplyAllChanges"
-        />
+         <!-- Agent 面板（新版 Novel Agent） -->
+         <AgentPanel
+           v-show="rightPanelMode === 'agent'"
+           :agent-messages="agent.agentMessages.value"
+           :agent-input="agent.agentInput.value"
+           :is-loading="agent.isAgentLoading.value"
+           :current-task="agent.currentTask.value"
+           @update:agentInput="(v) => (agent.agentInput.value = v)"
+           @send="handleAgentSend"
+           @cancel="handleAgentCancel"
+           @clear-history="agent.clearAgentHistory"
+           @show-diff="handleShowDiff"
+           @apply-all-changes="handleApplyAllChanges"
+         />
 
         <!-- 记忆系统面板 -->
         <div v-if="rightPanelMode === 'memory'" class="flex-1 overflow-hidden">
@@ -466,7 +468,7 @@ const showSettingsDialog = ref(false);
 const showVectorIndexDialog = ref(false);
 const showUserGuideDialog = ref(false);
 const chatPanelRef = ref<any>(null);
-const rightPanelMode = ref<'chat' | 'agent' | 'memory' | 'log' | 'rules'>('chat');
+const rightPanelMode = ref<'chat' | 'agent' | 'memory' | 'log' | 'rules'>('agent');
 const editorEl = ref<HTMLElement | null>(null);
 
 // 初始化 Novel Agent 系统的函数
@@ -837,6 +839,11 @@ const handleSendChat = async () => {
   await ai.sendChat(fs.currentFile.value, fs.workspaceRoot.value);
 };
 
+// Chat 取消
+const handleChatCancel = () => {
+  ai.cancelChat();
+};
+
 // 设置对话框关闭
 const handleSettingsClose = () => {
   showSettingsDialog.value = false;
@@ -860,6 +867,11 @@ const handleAgentSend = async () => {
     console.error('Agent 执行失败:', error);
     showAlert(error.message, 'Agent 执行失败', 'danger');
   }
+};
+
+// Agent 取消
+const handleAgentCancel = async () => {
+  await agent.cancelAgent();
 };
 
 const handleShowDiff = (change: FileChange) => {

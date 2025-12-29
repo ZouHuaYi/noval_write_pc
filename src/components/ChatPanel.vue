@@ -189,11 +189,19 @@
         </div>
 
         <button
+          v-if="!isLoading"
           class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-xs text-white disabled:opacity-50 disabled:cursor-not-allowed"
-          :disabled="!modelValue || isLoading || models.length === 0"
+          :disabled="!modelValue || models.length === 0"
           @click="handleSend"
         >
-          {{ isLoading ? '思考中...' : '发送 (Ctrl+Enter)' }}
+          发送 (Ctrl+Enter)
+        </button>
+        <button
+          v-else
+          class="px-3 py-1.5 rounded bg-rose-600 hover:bg-rose-500 text-xs text-white"
+          @click="handleCancel"
+        >
+          停止
         </button>
       </div>
     </div>
@@ -231,6 +239,7 @@ const emit = defineEmits<{
   (e: 'update:insertMode', value: 'append' | 'replace'): void;
   (e: 'update:selectedModel', value: number | null): void;
   (e: 'send'): void;
+  (e: 'cancel'): void;
   (e: 'deleteMessage', id: number): void;
 }>();
 
@@ -266,6 +275,10 @@ const loadModels = async () => {
 const handleSend = () => {
   if (!props.modelValue || props.isLoading || models.value.length === 0) return;
   emit('send');
+};
+
+const handleCancel = () => {
+  emit('cancel');
 };
 
 // 复制消息内容
