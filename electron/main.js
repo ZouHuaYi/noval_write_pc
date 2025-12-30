@@ -1401,9 +1401,9 @@ ${similarChunks.map((chunk, idx) =>
       // 加载上下文（loadContext 期望接收字符串，不是对象）
       const context = await currentMemory.loadContext(userRequest || '');
 
-      // 使用 MemoryUpdater 更新记忆
+      // 使用 MemoryUpdater 更新记忆（现在写入 ChapterExtract）
       const MemoryUpdater = require('./agent/memoryUpdater');
-      const memoryUpdater = new MemoryUpdater(currentMemory);
+      const memoryUpdater = new MemoryUpdater(currentMemory, currentMemory.workspaceRoot);
       
       const result = await memoryUpdater.update(text, { userRequest }, context, llmCaller);
       
@@ -1561,6 +1561,258 @@ ${similarChunks.map((chunk, idx) =>
       }
     } catch (err) {
       console.error('❌ 分析章节失败:', err);
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 结算章节（将 ChapterExtract 合并到 Knowledge Core）
+  ipcMain.handle('memory:finalizeChapter', async (event, chapterNumber) => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: false, error: '记忆系统未初始化' };
+      }
+
+      const result = await currentMemory.finalizeChapter(chapterNumber);
+      return result;
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 批量结算章节
+  ipcMain.handle('memory:finalizeChapters', async (event, chapterNumbers) => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: false, error: '记忆系统未初始化' };
+      }
+
+      const result = await currentMemory.finalizeChapters(chapterNumbers);
+      return result;
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 读取 ChapterExtract
+  ipcMain.handle('memory:readExtract', async (event, chapterNumber) => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: false, error: '记忆系统未初始化' };
+      }
+
+      const extract = currentMemory.readExtract(chapterNumber);
+      return { success: true, extract };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 列出所有 ChapterExtract
+  ipcMain.handle('memory:listExtracts', async () => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: true, chapters: [] };
+      }
+
+      const chapters = currentMemory.listExtracts();
+      return { success: true, chapters };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 获取所有概念
+  ipcMain.handle('memory:getAllConcepts', async () => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: true, concepts: {} };
+      }
+
+      const concepts = currentMemory.getAllConcepts();
+      return { success: true, concepts };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 获取所有事实
+  ipcMain.handle('memory:getAllFacts', async () => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: true, facts: [] };
+      }
+
+      const facts = currentMemory.getAllFacts();
+      return { success: true, facts };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 获取故事状态
+  ipcMain.handle('memory:getStoryState', async () => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: true, state: null };
+      }
+
+      const state = currentMemory.getStoryState();
+      return { success: true, state };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 获取所有伏笔（新架构）
+  ipcMain.handle('memory:getAllForeshadows', async () => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: true, foreshadows: [] };
+      }
+
+      const foreshadows = currentMemory.getAllForeshadows();
+      return { success: true, foreshadows };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 获取伏笔回收面板数据
+  ipcMain.handle('memory:getForeshadowPanelData', async (event, currentChapter) => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: false, error: '记忆系统未初始化' };
+      }
+
+      const data = currentMemory.getForeshadowPanelData(currentChapter);
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 搜索伏笔
+  ipcMain.handle('memory:searchForeshadows', async (event, query) => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: true, results: [] };
+      }
+
+      const results = currentMemory.searchForeshadows(query);
+      return { success: true, results };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 获取所有人物状态
+  ipcMain.handle('memory:getAllCharacterStates', async () => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: true, states: [] };
+      }
+
+      const states = currentMemory.getAllCharacterStates();
+      return { success: true, states };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 获取特定角色的状态
+  ipcMain.handle('memory:getCharacterStates', async (event, characterName) => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: true, states: [] };
+      }
+
+      const states = currentMemory.getCharacterStates(characterName);
+      return { success: true, states };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 获取人物状态统计
+  ipcMain.handle('memory:getCharacterStateStatistics', async () => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: true, statistics: {} };
+      }
+
+      const statistics = currentMemory.getCharacterStateStatistics();
+      return { success: true, statistics };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 清理已结算的 extracts
+  ipcMain.handle('memory:cleanFinalizedExtracts', async (event, { finalizedChapters, dryRun }) => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: false, error: '记忆系统未初始化' };
+      }
+
+      const result = currentMemory.cleanFinalizedExtracts(finalizedChapters || [], dryRun || false);
+      return { success: true, result };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 清理过期的 extracts
+  ipcMain.handle('memory:cleanOldExtracts', async (event, { maxAgeDays, dryRun }) => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: false, error: '记忆系统未初始化' };
+      }
+
+      const result = currentMemory.cleanOldExtracts(maxAgeDays || 30, dryRun || false);
+      return { success: true, result };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 获取清理统计
+  ipcMain.handle('memory:getExtractCleanupStats', async () => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: true, stats: {} };
+      }
+
+      const stats = currentMemory.getExtractCleanupStats();
+      return { success: true, stats };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 从旧架构迁移
+  ipcMain.handle('memory:migrateFromOldArchitecture', async (event, options) => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: false, error: '记忆系统未初始化' };
+      }
+
+      const result = await currentMemory.migrateFromOldArchitecture(options || {});
+      return result;
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 预览迁移
+  ipcMain.handle('memory:previewMigration', async () => {
+    try {
+      if (!currentMemory || !currentMemory.initialized) {
+        return { success: false, error: '记忆系统未初始化' };
+      }
+
+      const preview = await currentMemory.previewMigration();
+      return { success: true, preview };
+    } catch (err) {
       return { success: false, error: err.message };
     }
   });

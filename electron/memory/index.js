@@ -9,6 +9,11 @@ const PlotMemory = require('./plotMemory');
 const ForeshadowMemory = require('./foreshadowMemory');
 const SettingExtractor = require('./settingExtractor');
 const IntelligentExtractor = require('./intelligentExtractor');
+const ChapterFinalizer = require('./finalizer/chapterFinalizer');
+const ExtractWriter = require('./extractWriter');
+const ConceptResolver = require('./finalizer/conceptResolver');
+const ForeshadowPanel = require('./finalizer/foreshadowPanel');
+const CharacterStateKnowledge = require('./finalizer/characterStateKnowledge');
 
 class MemoryManager {
   constructor(workspaceRoot) {
@@ -21,14 +26,53 @@ class MemoryManager {
     this.settingExtractor = new SettingExtractor(workspaceRoot);
     this.llmConfig = null; // LLM 配置，稍后设置
     this.vectorIndex = null; // 向量索引，稍后设置
+    // 新架构组件
+    this.chapterFinalizer = new ChapterFinalizer(workspaceRoot);
+    this.extractWriter = new ExtractWriter(workspaceRoot);
+    this.conceptResolver = new ConceptResolver(workspaceRoot);
+    this.foreshadowPanel = new ForeshadowPanel(workspaceRoot);
+    this.characterStateKnowledge = new CharacterStateKnowledge(workspaceRoot);
   }
 
   /**
-   * 设置 LLM 配置
+   * 设置 LLM 配置（同时传递给新架构组件）
    */
   setLLMConfig(config) {
     this.llmConfig = config;
+    // 传递给 ChapterFinalizer 用于语义相似度
+    if (config && config.baseUrl && config.apiKey) {
+      // 从数据库获取默认的 embedding 模型配置
+      let embeddingConfig = {
+        ...config,
+        embeddingModel: config.embeddingModel || 'text-embedding-ada-002'
+      };
+
+      try {
+        const { embeddingModels } = require('../database');
+        const defaultEmbeddingModel = embeddingModels.getDefault();
+        if (defaultEmbeddingModel && defaultEmbeddingModel.base_url && defaultEmbeddingModel.api_key && defaultEmbeddingModel.model) {
+          // 使用数据库中的 embedding 模型配置
+          embeddingConfig = {
+            baseUrl: defaultEmbeddingModel.base_url,
+            apiKey: defaultEmbeddingModel.api_key,
+            embeddingModel: defaultEmbeddingModel.model
+          };
+          console.log(`📊 使用 Embedding 模型: ${defaultEmbeddingModel.name || defaultEmbeddingModel.model}`);
+        } else if (config.embeddingModel) {
+          // 如果 config 中已有 embeddingModel，使用它
+          console.log(`📊 使用配置中的 Embedding 模型: ${config.embeddingModel}`);
+        } else {
+          console.warn('⚠️ 未找到 Embedding 模型配置，使用默认值');
+        }
+      } catch (error) {
+        console.warn('⚠️ 获取 Embedding 模型配置失败:', error.message);
+        // 继续使用默认配置
+      }
+
+      this.chapterFinalizer.setLLMConfig(embeddingConfig);
+    }
   }
+
 
   /**
    * 设置向量索引
@@ -694,6 +738,241 @@ class MemoryManager {
       console.error('❌ 记忆导入失败:', error);
       return { success: false, error: error.message };
     }
+  }
+
+  /**
+   * 结算章节（将 ChapterExtract 合并到 Knowledge Core）
+   * @param {number} chapterNumber - 章节号
+   */
+  async finalizeChapter(chapterNumber) {
+    this.checkInitialized();
+    try {
+      await this.chapterFinalizer.finalizeChapter(chapterNumber);
+      return { success: true };
+    } catch (error) {
+      console.error(`❌ 结算第 ${chapterNumber} 章失败:`, error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 批量结算章节
+   * @param {number[]} chapterNumbers - 章节号数组
+   */
+  async finalizeChapters(chapterNumbers) {
+    this.checkInitialized();
+    try {
+      // 确保 chapterNumbers 是纯数字数组
+      const validChapterNumbers = chapterNumbers
+        .filter(num => typeof num === 'number' && !isNaN(num))
+        .map(num => Number(num));
+      
+      if (validChapterNumbers.length === 0) {
+        return { success: false, error: '没有有效的章节号' };
+      }
+
+      const results = await this.chapterFinalizer.finalizeChapters(validChapterNumbers);
+      
+      // 确保返回的数据是可序列化的
+      const serializableResults = results.map(r => ({
+        chapter: Number(r.chapter),
+        success: Boolean(r.success),
+        error: r.error ? String(r.error) : undefined
+      }));
+      
+      return { success: true, results: serializableResults };
+    } catch (error) {
+      console.error('❌ 批量结算失败:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 读取 ChapterExtract
+   * @param {number} chapterNumber - 章节号
+   */
+  readExtract(chapterNumber) {
+    return this.extractWriter.readExtract(chapterNumber);
+  }
+
+  /**
+   * 列出所有 ChapterExtract
+   */
+  listExtracts() {
+    return this.extractWriter.listExtracts();
+  }
+
+  /**
+   * 获取所有概念
+   */
+  getAllConcepts() {
+    return this.conceptResolver.getAllConcepts();
+  }
+
+  /**
+   * 获取所有事实
+   */
+  getAllFacts() {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const factFile = path.join(this.workspaceRoot, '.novel-agent', 'core', 'facts.json');
+      if (!fs.existsSync(factFile)) {
+        return [];
+      }
+      const content = fs.readFileSync(factFile, 'utf-8');
+      return JSON.parse(content);
+    } catch (error) {
+      console.error('❌ 读取事实失败:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 获取故事状态
+   */
+  getStoryState() {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const stateFile = path.join(this.workspaceRoot, '.novel-agent', 'core', 'story_state.json');
+      if (!fs.existsSync(stateFile)) {
+        return {
+          chapter: 0,
+          current_location: '',
+          global_tension: '',
+          known_threats: [],
+          open_mysteries: []
+        };
+      }
+      const content = fs.readFileSync(stateFile, 'utf-8');
+      return JSON.parse(content);
+    } catch (error) {
+      console.error('❌ 读取故事状态失败:', error);
+      return {
+        chapter: 0,
+        current_location: '',
+        global_tension: '',
+        known_threats: [],
+        open_mysteries: []
+      };
+    }
+  }
+
+  /**
+   * 获取所有伏笔（新架构）
+   */
+  getAllForeshadows() {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const foreshadowFile = path.join(this.workspaceRoot, '.novel-agent', 'core', 'foreshadows.json');
+      if (!fs.existsSync(foreshadowFile)) {
+        return [];
+      }
+      const content = fs.readFileSync(foreshadowFile, 'utf-8');
+      return JSON.parse(content);
+    } catch (error) {
+      console.error('❌ 读取伏笔失败:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 获取伏笔回收面板数据
+   * @param {number} currentChapter - 当前章节（可选）
+   */
+  getForeshadowPanelData(currentChapter = null) {
+    this.checkInitialized();
+    
+    const panel = this.foreshadowPanel;
+    const data = {
+      statistics: panel.getStatistics(),
+      byState: panel.getForeshadowsByState(),
+      timeline: panel.getTimeline(),
+      openMysteries: panel.getOpenMysteries()
+    };
+
+    if (currentChapter) {
+      data.pendingRecycle = panel.getPendingRecycle(currentChapter);
+    }
+
+    return data;
+  }
+
+  /**
+   * 搜索伏笔
+   * @param {string} query - 搜索关键词
+   */
+  searchForeshadows(query) {
+    this.checkInitialized();
+    return this.foreshadowPanel.searchForeshadows(query);
+  }
+
+  /**
+   * 获取人物状态知识（所有角色）
+   */
+  getAllCharacterStates() {
+    this.checkInitialized();
+    return this.characterStateKnowledge.getAllCharactersSummary();
+  }
+
+  /**
+   * 获取特定角色的状态
+   * @param {string} characterName - 角色名称
+   */
+  getCharacterStates(characterName) {
+    this.checkInitialized();
+    return this.characterStateKnowledge.getCharacterStates(characterName);
+  }
+
+  /**
+   * 获取角色的当前状态
+   * @param {string} characterName - 角色名称
+   */
+  getCharacterCurrentState(characterName) {
+    this.checkInitialized();
+    return this.characterStateKnowledge.getCharacterCurrentState(characterName);
+  }
+
+  /**
+   * 获取人物状态统计
+   */
+  getCharacterStateStatistics() {
+    this.checkInitialized();
+    return this.characterStateKnowledge.getStatisticsByType();
+  }
+
+  /**
+   * 清理已结算的 extracts
+   * @param {Array} finalizedChapters - 已结算的章节号列表
+   * @param {boolean} dryRun - 是否只是预览
+   */
+  cleanFinalizedExtracts(finalizedChapters, dryRun = false) {
+    this.checkInitialized();
+    return this.chapterFinalizer.cleanFinalizedExtracts(finalizedChapters, dryRun);
+  }
+
+  /**
+   * 清理过期的 extracts
+   * @param {number} maxAgeDays - 最大保留天数
+   * @param {boolean} dryRun - 是否只是预览
+   */
+  cleanOldExtracts(maxAgeDays = 30, dryRun = false) {
+    this.checkInitialized();
+    const ExtractCleaner = require('./finalizer/extractCleaner');
+    const cleaner = new ExtractCleaner(this.workspaceRoot);
+    return cleaner.cleanOld(maxAgeDays, dryRun);
+  }
+
+  /**
+   * 获取清理统计信息
+   */
+  getExtractCleanupStats() {
+    this.checkInitialized();
+    const ExtractCleaner = require('./finalizer/extractCleaner');
+    const cleaner = new ExtractCleaner(this.workspaceRoot);
+    return cleaner.getCleanupStats();
   }
 }
 

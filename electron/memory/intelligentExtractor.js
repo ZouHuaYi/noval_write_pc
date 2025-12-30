@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const { callLLM } = require('../llm');
 const { safeParseJSON } = require('../utils/jsonParser');
+const ExtractWriter = require('./extractWriter');
 const FileStateManager = require('./fileStateManager');
 
 class IntelligentExtractor {
@@ -16,6 +17,7 @@ class IntelligentExtractor {
     this.llmConfig = llmConfig;
     this.vectorIndex = vectorIndex; // 向量索引（可选）
     this.fileStateManager = new FileStateManager(workspaceRoot);
+    this.extractWriter = new ExtractWriter(workspaceRoot);
     this.onProgress = null; // 进度回调
     
     this.settingFiles = [
@@ -516,58 +518,63 @@ ${content}
   }
 
   /**
-   * 使用 LLM 从章节内容中提取信息
+   * 使用 LLM 从章节内容中提取信息（重构版：输出 ChapterExtract）
    */
   async extractFromChapter(content, chapterNumber, filename) {
     // 限制内容长度
     const limitedContent = content.substring(0, 3000);
 
-    const systemPrompt = `你是一个【小说内容解析程序】。
+    const systemPrompt = `你是小说分析 Agent，而不是记忆系统。
 
-⚠️ 系统规则（必须遵守）：
-1. 你只能输出 JSON
-2. JSON 必须是完整、可解析的
-3. 不要输出任何解释、说明、注释
-4. 不要使用 Markdown
-5. 不要在 JSON 外输出任何字符
-
-你必须且只能在 <json> 和 </json> 之间输出内容。
+# 核心规则
+1. **禁止直接写入任何长期记忆**
+2. **只能输出 ChapterExtract JSON**
+3. **不得重复总结已有事实**，只在发现"可能新增信息"时输出
+4. **所有概念请用自然语言**，不要尝试生成 ID
 
 # 任务
 从提供的章节内容中提取以下信息：
-1. 出现的新角色（如果之前没有提到）
-2. 角色状态变化（境界、位置、技能等）
-3. 重要剧情事件
-4. 伏笔线索
+1. 事实候选（世界规则、生物学事实、不可逆事件）
+2. 概念提及（新概念或已有概念的不同表述）
+3. 伏笔候选（未来承诺）
+4. 故事状态快照
 
-# 输出格式
+# 输出格式（ChapterExtract）
 <json>
 {
-  "characters": [
+  "chapter": ${chapterNumber},
+  "fact_candidates": [
     {
-      "name": "角色名",
-      "action": "add" | "update",
-      "updates": {
-        "level": "新境界",
-        "location": "新位置",
-        "skills": ["新技能"]
-      }
+      "statement": "事实陈述（客观、不可逆）",
+      "type": "world_rule" | "biology" | "irreversible_event" | "location",
+      "confidence": "observed" | "canonical",
+      "evidence": "证据来源",
+      "source_refs": ["章节引用"],
+      "concept_refs": ["相关概念表面文本"]
     }
   ],
-  "plot_events": [
+  "concept_mentions": [
     {
-      "name": "事件名称",
-      "description": "事件描述",
-      "significance": "minor" | "normal" | "major" | "critical"
+      "surface": "概念表面文本（如'地磁异常'）",
+      "context": "出现上下文",
+      "chapter": ${chapterNumber},
+      "description": "概念描述（可选）"
     }
   ],
-  "foreshadows": [
+  "foreshadow_candidates": [
     {
-      "title": "伏笔标题",
-      "content": "伏笔内容",
-      "importance": "minor" | "normal" | "major" | "critical"
+      "surface": "伏笔相关概念表面文本",
+      "implied_future": "暗示的未来",
+      "chapter": ${chapterNumber}
     }
-  ]
+  ],
+  "story_state_snapshot": {
+    "current_location": "当前地点",
+    "global_tension": "low" | "medium" | "high" | "critical",
+    "known_threats": ["威胁概念表面文本"],
+    "open_mysteries": ["未解之谜概念表面文本"]
+  },
+  "raw_notes": "如果只是确认已有事实，在这里说明"
 }
 </json>`;
 
@@ -575,7 +582,7 @@ ${content}
 
 ${limitedContent}
 
-请提取其中的角色信息、剧情事件和伏笔线索。`;
+请提取其中的事实、概念、伏笔和故事状态。`;
 
     try {
       const responseText = await callLLM(
@@ -586,7 +593,7 @@ ${limitedContent}
         ],
         {
           temperature: 0.3,
-          maxTokens: 2048
+          maxTokens: 3000
         }
       );
 
@@ -597,8 +604,13 @@ ${limitedContent}
         fallbackExtract: true
       });
 
-      // 更新记忆系统
-      await this.updateMemoryFromChapter(extracted, chapterNumber);
+      // 确保章节号存在
+      extracted.chapter = chapterNumber;
+
+      // 写入 ChapterExtract（临时账本）
+      await this.extractWriter.writeExtract(chapterNumber, extracted);
+      
+      console.log(`✅ 已写入 ChapterExtract: chapter_${chapterNumber}.json`);
       
       // 返回提取结果
       return extracted;
@@ -611,102 +623,13 @@ ${limitedContent}
   }
 
   /**
-   * 从章节提取的信息更新记忆系统
+   * 从章节提取的信息更新记忆系统（已废弃）
+   * 现在改为写入 ChapterExtract，由 ChapterFinalizer 统一结算
+   * @deprecated 使用 extractFromChapter 写入 ChapterExtract
    */
   async updateMemoryFromChapter(extracted, chapterNumber) {
-    if (!extracted) return;
-
-    try {
-      // 1. 更新角色
-      if (extracted.characters && Array.isArray(extracted.characters)) {
-        for (const char of extracted.characters) {
-          try {
-            if (char.action === 'add') {
-              // 添加新角色（如果已存在，addCharacter 会返回现有角色ID）
-              const charId = await this.memoryManager.character.addCharacter({
-                name: char.name,
-                role: 'supporting',
-                current_state: char.updates || {},
-                source: `第${chapterNumber}章提取`
-              });
-              
-              // 如果角色已存在，更新其状态
-              const existing = this.memoryManager.character.getCharacter(charId);
-              if (existing && char.updates) {
-                await this.memoryManager.character.updateCharacterState(char.name, char.updates, {
-                  chapter: chapterNumber,
-                  source: 'chapter_extractor'
-                });
-                console.log(`✅ 从章节更新角色: ${char.name}`);
-              } else {
-                console.log(`✅ 从章节添加角色: ${char.name}`);
-              }
-            } else if (char.action === 'update') {
-              // 更新现有角色
-              const existing = this.memoryManager.character.getCharacter(char.name);
-              if (existing) {
-                await this.memoryManager.character.updateCharacterState(char.name, char.updates || {}, {
-                  chapter: chapterNumber,
-                  source: 'chapter_extractor'
-                });
-                console.log(`✅ 从章节更新角色: ${char.name}`);
-              } else {
-                // 如果角色不存在，先创建再更新
-                console.log(`⚠️ 角色不存在，先创建: ${char.name}`);
-                await this.memoryManager.character.addCharacter({
-                  name: char.name,
-                  role: 'supporting',
-                  current_state: char.updates || {}
-                });
-                console.log(`✅ 从章节添加并更新角色: ${char.name}`);
-              }
-            }
-          } catch (err) {
-            console.warn(`⚠️ 更新角色失败: ${char.name}`, err.message);
-          }
-        }
-      }
-
-      // 2. 添加剧情事件
-      if (extracted.plot_events && Array.isArray(extracted.plot_events)) {
-        for (const event of extracted.plot_events) {
-          try {
-            await this.memoryManager.plot.addCompletedEvent({
-              name: event.name,
-              chapter: chapterNumber,
-              description: event.description,
-              significance: event.significance || 'normal'
-            });
-            console.log(`✅ 添加剧情事件: ${event.name}`);
-          } catch (err) {
-            console.warn(`⚠️ 添加剧情事件失败: ${event.name}`, err.message);
-          }
-        }
-      }
-
-      // 3. 添加伏笔
-      if (extracted.foreshadows && Array.isArray(extracted.foreshadows)) {
-        for (const foreshadow of extracted.foreshadows) {
-          try {
-            await this.memoryManager.foreshadow.addForeshadow({
-              title: foreshadow.title,
-              content: foreshadow.content,
-              importance: foreshadow.importance || 'normal',
-              introduced_at: {
-                chapter: chapterNumber,
-                paragraph: '章节内容'
-              }
-            });
-            console.log(`✅ 添加伏笔: ${foreshadow.title}`);
-          } catch (err) {
-            console.warn(`⚠️ 添加伏笔失败: ${foreshadow.title}`, err.message);
-          }
-        }
-      }
-
-    } catch (error) {
-      console.error('❌ 更新记忆系统失败:', error);
-    }
+    // 此方法已废弃，保留用于兼容性
+    console.log('⚠️ updateMemoryFromChapter 已废弃，请使用 ChapterExtract + ChapterFinalizer');
   }
 }
 

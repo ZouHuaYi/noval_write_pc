@@ -230,6 +230,123 @@
             <span class="text-slate-200 font-medium">{{ memory.memorySummary.value?.plot.pending_goals_count || 0 }} 个</span>
           </div>
         </div>
+
+        <!-- 知识核心 -->
+        <div v-if="activeTab === 'knowledge'" class="flex flex-col gap-4">
+          <!-- 概念 -->
+          <div>
+            <h4 class="text-sm font-semibold text-slate-300 mb-3">概念 ({{ Object.keys(concepts).length }})</h4>
+            <div class="flex flex-col gap-2">
+              <div
+                v-for="[id, concept] in Object.entries(concepts)"
+                :key="id"
+                class="p-3 bg-slate-900 rounded-lg border border-slate-700"
+              >
+                <div class="text-sm font-medium text-slate-200 mb-1">{{ id }}</div>
+                <div class="text-xs text-slate-400 mb-2">
+                  别名: {{ concept.aliases?.join('、') || '无' }}
+                </div>
+                <div v-if="concept.description" class="text-xs text-slate-300">
+                  {{ concept.description }}
+                </div>
+              </div>
+              <div v-if="Object.keys(concepts).length === 0" class="text-sm text-slate-400 text-center py-4">
+                暂无概念
+              </div>
+            </div>
+          </div>
+
+          <!-- 事实 -->
+          <div>
+            <h4 class="text-sm font-semibold text-slate-300 mb-3">事实 ({{ facts.length }})</h4>
+            <div class="flex flex-col gap-2">
+              <div
+                v-for="fact in facts"
+                :key="fact.fact_id"
+                class="p-3 bg-slate-900 rounded-lg border border-slate-700"
+              >
+                <div class="text-sm text-slate-200 mb-1">{{ fact.statement }}</div>
+                <div class="text-xs text-slate-400">
+                  类型: {{ fact.type }} | 章节: {{ fact.introduced_in }} | 置信度: {{ fact.confidence }}
+                </div>
+              </div>
+              <div v-if="facts.length === 0" class="text-sm text-slate-400 text-center py-4">
+                暂无事实
+              </div>
+            </div>
+          </div>
+
+          <!-- 故事状态 -->
+          <div v-if="storyState">
+            <h4 class="text-sm font-semibold text-slate-300 mb-3">故事状态</h4>
+            <div class="p-3 bg-slate-900 rounded-lg border border-slate-700">
+              <div class="text-sm text-slate-200 mb-2">第 {{ storyState.chapter }} 章</div>
+              <div class="text-xs text-slate-400 mb-1">当前位置: {{ storyState.current_location || '未知' }}</div>
+              <div class="text-xs text-slate-400 mb-1">全局紧张度: {{ storyState.global_tension || '未知' }}</div>
+            </div>
+          </div>
+
+          <!-- 新架构伏笔 -->
+          <div>
+            <h4 class="text-sm font-semibold text-slate-300 mb-3">伏笔 ({{ newForeshadows.length }})</h4>
+            <div class="flex flex-col gap-2">
+              <div
+                v-for="f in newForeshadows"
+                :key="f.concept_id"
+                class="p-3 bg-slate-900 rounded-lg border border-slate-700"
+              >
+                <div class="flex items-center justify-between mb-2">
+                  <div class="text-sm font-medium text-slate-200">{{ f.concept_id }}</div>
+                  <span :class="['px-2 py-1 text-xs rounded', getForeshadowStateClass(f.state)]">
+                    {{ f.state }}
+                  </span>
+                </div>
+                <div class="text-xs text-slate-400">
+                  引入章节: {{ f.introduced_in }} | 最后更新: {{ f.last_updated }}
+                </div>
+              </div>
+              <div v-if="newForeshadows.length === 0" class="text-sm text-slate-400 text-center py-4">
+                暂无伏笔
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 章节提取 -->
+        <div v-if="activeTab === 'extracts'" class="flex flex-col gap-3">
+          <div class="flex items-center justify-between mb-3">
+            <h4 class="text-sm font-semibold text-slate-300">待结算章节 ({{ extracts.length }})</h4>
+            <button
+              @click="handleFinalizeAll"
+              :disabled="extracts.length === 0 || isFinalizing"
+              class="px-3 py-1 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {{ isFinalizing ? '结算中...' : '全部结算' }}
+            </button>
+          </div>
+          <div class="flex flex-col gap-2">
+            <div
+              v-for="chapter in extracts"
+              :key="chapter"
+              class="p-3 bg-slate-900 rounded-lg border border-slate-700 flex items-center justify-between"
+            >
+              <div>
+                <div class="text-sm font-medium text-slate-200">第 {{ chapter }} 章</div>
+                <div class="text-xs text-slate-400">ChapterExtract 已生成</div>
+              </div>
+              <button
+                @click="handleFinalizeChapter(chapter)"
+                :disabled="isFinalizing"
+                class="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                结算
+              </button>
+            </div>
+            <div v-if="extracts.length === 0" class="text-sm text-slate-400 text-center py-4">
+              暂无待结算章节
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -252,7 +369,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 import { useMemory } from '../composables/useMemory';
 import { useNovelAgent } from '../composables/useNovelAgent';
 
@@ -266,11 +383,19 @@ const activeTab = ref('characters');
 const showResetConfirm = ref(false);
 const isExtracting = ref(false);
 const extractProgress = ref<any>(null);
+const concepts = ref<any>({});
+const facts = ref<any[]>([]);
+const storyState = ref<any>(null);
+const newForeshadows = ref<any[]>([]);
+const extracts = ref<number[]>([]);
+const isFinalizing = ref(false);
 
 const tabs = [
   { id: 'characters', label: '角色', icon: '👥' },
   { id: 'foreshadows', label: '伏笔', icon: '🎯' },
-  { id: 'plot', label: '剧情', icon: '📖' }
+  { id: 'plot', label: '剧情', icon: '📖' },
+  { id: 'knowledge', label: '知识核心', icon: '🧠' },
+  { id: 'extracts', label: '章节提取', icon: '📝' }
 ];
 
 const getRoleLabel = (role: string) => {
@@ -311,6 +436,16 @@ const getImportanceBadgeClass = (importance: string) => {
   return classes[importance] || 'bg-slate-500/20 text-slate-400';
 };
 
+const getForeshadowStateClass = (state: string) => {
+  const classes: Record<string, string> = {
+    pending: 'bg-yellow-500/20 text-yellow-400',
+    confirmed: 'bg-blue-500/20 text-blue-400',
+    revealed: 'bg-green-500/20 text-green-400',
+    archived: 'bg-slate-500/20 text-slate-400'
+  };
+  return classes[state] || 'bg-slate-500/20 text-slate-400';
+};
+
 const handleRefresh = async () => {
   // 如果未初始化，先尝试初始化
   if (!memory.initialized.value && props.workspaceRoot) {
@@ -327,6 +462,108 @@ const handleRefresh = async () => {
     await memory.getSummary();
     await memory.getAllCharacters();
     await memory.getPendingForeshadows();
+    
+    // 加载新架构数据
+    await loadNewArchitectureData();
+  }
+};
+
+// 加载新架构数据
+const loadNewArchitectureData = async () => {
+  try {
+    // 加载概念
+    const conceptsResult = await window.api?.memory?.getAllConcepts();
+    if (conceptsResult?.success) {
+      concepts.value = conceptsResult.concepts || {};
+    }
+
+    // 加载事实
+    const factsResult = await window.api?.memory?.getAllFacts();
+    if (factsResult?.success) {
+      facts.value = factsResult.facts || [];
+    }
+
+    // 加载故事状态
+    const stateResult = await window.api?.memory?.getStoryState();
+    if (stateResult?.success) {
+      storyState.value = stateResult.state;
+    }
+
+    // 加载新架构伏笔
+    const foreshadowsResult = await window.api?.memory?.getAllForeshadows();
+    if (foreshadowsResult?.success) {
+      newForeshadows.value = foreshadowsResult.foreshadows || [];
+    }
+
+    // 加载待结算章节
+    const extractsResult = await window.api?.memory?.listExtracts();
+    if (extractsResult?.success) {
+      extracts.value = extractsResult.chapters || [];
+    }
+  } catch (err: any) {
+    console.error('❌ 加载新架构数据失败:', err);
+  }
+};
+
+// 结算单个章节
+const handleFinalizeChapter = async (chapterNumber: number) => {
+  if (isFinalizing.value) return;
+
+  isFinalizing.value = true;
+  try {
+    const result = await window.api?.memory?.finalizeChapter?.(chapterNumber);
+    if (result?.success) {
+      console.log(`✅ 第 ${chapterNumber} 章结算成功`);
+      // 刷新数据
+      await loadNewArchitectureData();
+      await handleRefresh();
+    } else {
+      console.error(`❌ 第 ${chapterNumber} 章结算失败:`, result?.error);
+    }
+  } catch (err: any) {
+    console.error(`❌ 结算章节失败:`, err);
+  } finally {
+    isFinalizing.value = false;
+  }
+};
+
+// 批量结算所有章节
+const handleFinalizeAll = async () => {
+  if (isFinalizing.value || extracts.value.length === 0) return;
+
+  isFinalizing.value = true;
+  try {
+    // 确保只传递章节号数组（数字数组），而不是对象
+    const chapterNumbers = extracts.value.map((item: any) => {
+      // 如果 item 是数字，直接返回
+      if (typeof item === 'number') {
+        return item;
+      }
+      // 如果 item 是对象，尝试提取章节号
+      if (typeof item === 'object' && item !== null) {
+        return item.chapter || item.chapterNumber || item;
+      }
+      return item;
+    }).filter((num: any) => typeof num === 'number' && !isNaN(num));
+
+    if (chapterNumbers.length === 0) {
+      console.error('❌ 没有有效的章节号');
+      return;
+    }
+
+    const result = await window.api?.memory?.finalizeChapters?.(chapterNumbers);
+    if (result?.success) {
+      console.log(`✅ 批量结算成功`);
+      // 刷新数据
+      await loadNewArchitectureData();
+      await handleRefresh();
+    } else {
+      console.error(`❌ 批量结算失败:`, result?.error);
+    }
+  } catch (err: any) {
+    console.error(`❌ 批量结算失败:`, err);
+  } finally {
+    isFinalizing.value = false;
   }
 };
 
@@ -463,6 +700,13 @@ const handleIntelligentExtract = async (forceRescan: boolean = false) => {
 
 onMounted(() => {
   handleRefresh();
+  
+  // 监听标签页切换，加载对应数据
+  watch(activeTab, (newTab) => {
+    if (newTab === 'knowledge' || newTab === 'extracts') {
+      loadNewArchitectureData();
+    }
+  });
 });
 </script>
 
