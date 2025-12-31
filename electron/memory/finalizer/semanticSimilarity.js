@@ -49,7 +49,7 @@ class SemanticSimilarity {
             'Authorization': `Bearer ${this.llmConfig.apiKey}`,
             'Content-Type': 'application/json'
           },
-          timeout: 30000 // 30秒超时
+          timeout: 300000 // 5分钟超时
         }
       );
 

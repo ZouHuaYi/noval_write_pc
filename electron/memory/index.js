@@ -347,9 +347,9 @@ class MemoryManager {
           // 更新当前阶段（基于章节数）
           if (extracted.plotInfo.totalChapters > 0) {
             let stage = '初期';
-            if (extracted.plotInfo.totalChapters > 20) {
+            if (extracted.plotInfo.totalChapters > 100) {
               stage = '后期';
-            } else if (extracted.plotInfo.totalChapters > 10) {
+            } else if (extracted.plotInfo.totalChapters > 50) {
               stage = '中期';
             }
 
