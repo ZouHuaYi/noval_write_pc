@@ -1945,6 +1945,10 @@ ${similarChunks.map((chunk, idx) =>
         return { success: false, error: '工作区路径不能为空' };
       }
 
+      // 初始化日志系统
+      const logger = require('./utils/logger');
+      logger.initialize(workspaceRoot);
+
       currentAgent = new AgentOrchestrator(workspaceRoot);
       const result = await currentAgent.initialize();
       

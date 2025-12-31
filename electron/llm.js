@@ -1,4 +1,5 @@
 const axios = require('axios');
+const logger = require('./utils/logger');
 
 /**
  * 调用 OpenAI 兼容的 API
@@ -9,17 +10,21 @@ const axios = require('axios');
  */
 async function callLLM(config, messages, options = {}) {
   const { baseUrl, apiKey, model } = config;
+  const startTime = Date.now();
+  
+  // 准备请求数据
+  const requestData = {
+    model: model,
+    messages: messages,
+    temperature: options.temperature || 0.7,
+    max_tokens: options.maxTokens || 2000,
+    stream: false
+  };
   
   try {
     const response = await axios.post(
       `${baseUrl}/chat/completions`,
-      {
-        model: model,
-        messages: messages,
-        temperature: options.temperature || 0.7,
-        max_tokens: options.maxTokens || 2000,
-        stream: false
-      },
+      requestData,
       {
         headers: {
           'Content-Type': 'application/json',
@@ -29,24 +34,66 @@ async function callLLM(config, messages, options = {}) {
       }
     );
     
+    const duration = Date.now() - startTime;
+    
     if (response.data && response.data.choices && response.data.choices.length > 0) {
-      return response.data.choices[0].message.content;
+      const content = response.data.choices[0].message.content;
+      const usage = response.data.usage || null;
+      
+      // 记录成功的请求
+      logger.logLLMRequest(
+        {
+          model,
+          baseUrl,
+          messages,
+          temperature: requestData.temperature,
+          maxTokens: requestData.max_tokens
+        },
+        {
+          success: true,
+          content,
+          usage
+        },
+        duration
+      );
+      
+      return content;
     } else {
       throw new Error('Invalid response from LLM API');
     }
   } catch (error) {
-    console.error('LLM API 调用失败:', error.message);
+    const duration = Date.now() - startTime;
+    let errorMessage = '';
     
     if (error.response) {
       // 服务器返回错误
-      throw new Error(`API Error: ${error.response.status} - ${error.response.data?.error?.message || error.message}`);
+      errorMessage = `API Error: ${error.response.status} - ${error.response.data?.error?.message || error.message}`;
     } else if (error.request) {
       // 请求已发送但没有收到响应
-      throw new Error(`Network Error: 无法连接到 API (${baseUrl})`);
+      errorMessage = `Network Error: 无法连接到 API (${baseUrl})`;
     } else {
       // 其他错误
-      throw new Error(`Error: ${error.message}`);
+      errorMessage = `Error: ${error.message}`;
     }
+    
+    // 记录失败的请求
+    logger.logLLMRequest(
+      {
+        model,
+        baseUrl,
+        messages,
+        temperature: requestData.temperature,
+        maxTokens: requestData.max_tokens
+      },
+      {
+        success: false,
+        error: errorMessage
+      },
+      duration
+    );
+    
+    console.error('LLM API 调用失败:', errorMessage);
+    throw new Error(errorMessage);
   }
 }
 

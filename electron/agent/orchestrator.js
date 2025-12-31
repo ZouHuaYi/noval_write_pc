@@ -28,6 +28,7 @@ const { AgentStates } = require('../memory/types');
 const fs = require('fs').promises;
 const path = require('path');
 const { app } = require('electron');
+const logger = require('../utils/logger');
 
 class AgentOrchestrator {
   constructor(workspaceRoot) {
@@ -70,7 +71,7 @@ class AgentOrchestrator {
    */
   async initialize() {
     try {
-      console.log('🚀 初始化 Novel Agent Orchestrator...');
+      logger.logAgent('Agent 初始化开始', { workspaceRoot: this.workspaceRoot });
 
       // 初始化记忆系统
       this.memory = new MemoryManager(this.workspaceRoot);
@@ -111,11 +112,19 @@ class AgentOrchestrator {
       this.setState(AgentStates.IDLE);
       this.log('Agent initialized', { success: true });
 
-      console.log('✅ Agent 初始化完成（含记忆、规则、意图、校验、重写、更新器）');
+      logger.logAgent('Agent 初始化完成', { 
+        memory: !!this.memory,
+        rules: !!this.ruleEngine,
+        dslRules: !!this.dslRuleEngine,
+        intentAnalyzer: !!this.intentAnalyzer,
+        consistencyChecker: !!this.consistencyChecker,
+        rewriter: !!this.rewriter,
+        memoryUpdater: !!this.memoryUpdater
+      });
       return { success: true };
 
     } catch (error) {
-      console.error('❌ Agent 初始化失败:', error);
+      logger.logAgent('Agent 初始化失败', { error: error.message }, 'ERROR');
       this.setState(AgentStates.ERROR);
       return { success: false, error: error.message };
     }
@@ -1224,7 +1233,6 @@ ${JSON.stringify({
     const oldState = this.state;
     this.state = newState;
     this.log('State changed', { from: oldState, to: newState });
-    console.log(`🔄 Agent 状态: ${oldState} → ${newState}`);
   }
 
   /**
@@ -1242,14 +1250,18 @@ ${JSON.stringify({
   }
 
   /**
-   * 记录日志
+   * 记录日志（使用统一的日志管理器）
    */
   log(action, data = {}) {
+    // 使用统一的日志管理器
+    logger.logAgent(action, data, this.state);
+
+    // 同时保留在内存中（用于前端显示）
     const logEntry = {
       timestamp: new Date().toISOString(),
       state: this.state,
       action,
-      data
+      data: logger.sanitizeData(data) // 使用日志管理器的清理方法
     };
 
     this.executionLog.push(logEntry);
