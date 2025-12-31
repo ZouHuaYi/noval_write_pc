@@ -34,6 +34,13 @@
         >
           Embedding 模型
         </button>
+        <button
+          class="px-6 py-3 text-sm font-medium transition-colors"
+          :class="activeTab === 'agent' ? 'text-emerald-400 border-b-2 border-emerald-400' : 'text-slate-400 hover:text-slate-200'"
+          @click="activeTab = 'agent'"
+        >
+          Agent 设置
+        </button>
       </div>
 
       <!-- 内容区域 -->
@@ -145,6 +152,40 @@
               >
                 {{ editingLLM ? '保存' : '添加' }}
               </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Agent 设置 -->
+        <div v-if="activeTab === 'agent'" class="space-y-4">
+          <div class="bg-slate-900/80 border border-emerald-600/30 rounded-lg p-4 space-y-3">
+            <h4 class="text-sm font-medium text-slate-100 mb-3">Agent 自动结算设置</h4>
+            
+            <div class="flex items-center justify-between">
+              <div class="flex-1">
+                <label class="block text-sm text-slate-300 mb-1">自动结算章节</label>
+                <p class="text-xs text-slate-500">
+                  启用后，Agent 执行完成并应用变更后，将自动结算章节（将 ChapterExtract 合并到 Knowledge Core）
+                </p>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input
+                  v-model="autoFinalizeChapter"
+                  type="checkbox"
+                  class="sr-only peer"
+                  @change="saveAutoFinalizeSetting"
+                />
+                <div class="w-11 h-6 bg-slate-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-emerald-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+              </label>
+            </div>
+            
+            <div class="mt-4 p-3 bg-slate-800/50 rounded text-xs text-slate-400">
+              <p class="font-semibold text-slate-300 mb-1">💡 说明：</p>
+              <ul class="list-disc list-inside space-y-1 ml-2">
+                <li>自动结算会在 Agent 执行完成后自动将 ChapterExtract 合并到长期记忆</li>
+                <li>如果禁用，需要手动在记忆系统面板中结算章节</li>
+                <li>建议在熟悉系统后启用，新手建议先手动结算以便了解流程</li>
+              </ul>
             </div>
           </div>
         </div>
@@ -264,6 +305,7 @@ const emit = defineEmits<{
 const activeTab = ref('llm');
 const llmModels = ref<Model[]>([]);
 const embeddingModels = ref<Model[]>([]);
+const autoFinalizeChapter = ref(false);
 
 // LLM 表单
 const showLLMForm = ref(false);
@@ -477,10 +519,40 @@ const setEmbeddingDefault = async (id: number) => {
   }
 };
 
+// 加载自动结算设置
+const loadAutoFinalizeSetting = async () => {
+  if (!window.api?.settings) return;
+  try {
+    const result = await window.api.settings.get('autoFinalizeChapter');
+    if (result.success) {
+      autoFinalizeChapter.value = result.value === 'true' || result.value === true;
+    }
+  } catch (error) {
+    console.warn('加载自动结算设置失败:', error);
+  }
+};
+
+// 保存自动结算设置
+const saveAutoFinalizeSetting = async () => {
+  if (!window.api?.settings) return;
+  try {
+    const result = await window.api.settings.set('autoFinalizeChapter', autoFinalizeChapter.value ? 'true' : 'false');
+    if (result.success) {
+      console.log('自动结算设置已保存:', autoFinalizeChapter.value);
+    } else {
+      alert('保存设置失败：' + result.error);
+    }
+  } catch (error) {
+    console.error('保存自动结算设置失败:', error);
+    alert('保存设置失败：' + (error as Error).message);
+  }
+};
+
 onMounted(() => {
   if (props.visible) {
     loadLLMModels();
     loadEmbeddingModels();
+    loadAutoFinalizeSetting();
   }
 });
 
@@ -488,6 +560,7 @@ watch(() => props.visible, (newVal) => {
   if (newVal) {
     loadLLMModels();
     loadEmbeddingModels();
+    loadAutoFinalizeSetting();
   }
 });
 

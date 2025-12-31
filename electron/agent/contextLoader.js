@@ -21,6 +21,98 @@ class ContextLoader {
       '提示.md',
       '人物.md'
     ];
+    
+    // 性能优化：添加缓存机制
+    this.cache = new Map();
+    this.cacheTimeout = 5 * 60 * 1000; // 5 分钟缓存
+    this.fileContentCache = new Map(); // 文件内容缓存
+    this.fileContentCacheTimeout = 2 * 60 * 1000; // 2 分钟文件内容缓存
+  }
+  
+  /**
+   * 生成缓存键
+   */
+  generateCacheKey(prefix, ...args) {
+    const argsStr = args.map(arg => {
+      if (typeof arg === 'object') {
+        return JSON.stringify(arg);
+      }
+      return String(arg);
+    }).join('_');
+    return `${prefix}_${argsStr}`;
+  }
+  
+  /**
+   * 获取缓存
+   */
+  getCached(key) {
+    const cached = this.cache.get(key);
+    if (!cached) {
+      return null;
+    }
+    if (Date.now() > cached.expireTime) {
+      this.cache.delete(key);
+      return null;
+    }
+    return cached.value;
+  }
+  
+  /**
+   * 设置缓存
+   */
+  setCache(key, value, timeout = null) {
+    const expireTime = timeout || this.cacheTimeout;
+    this.cache.set(key, {
+      value,
+      timestamp: Date.now(),
+      expireTime: Date.now() + expireTime
+    });
+  }
+  
+  /**
+   * 清除缓存
+   */
+  clearCache(pattern = null) {
+    if (!pattern) {
+      this.cache.clear();
+      this.fileContentCache.clear();
+      return;
+    }
+    for (const key of this.cache.keys()) {
+      if (pattern.test(key)) {
+        this.cache.delete(key);
+      }
+    }
+    for (const key of this.fileContentCache.keys()) {
+      if (pattern.test(key)) {
+        this.fileContentCache.delete(key);
+      }
+    }
+  }
+  
+  /**
+   * 获取文件内容（带缓存）
+   */
+  async getFileContent(filePath) {
+    const cacheKey = `file_content_${filePath}`;
+    const cached = this.fileContentCache.get(cacheKey);
+    
+    if (cached && Date.now() < cached.expireTime) {
+      return cached.content;
+    }
+    
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      this.fileContentCache.set(cacheKey, {
+        content,
+        timestamp: Date.now(),
+        expireTime: Date.now() + this.fileContentCacheTimeout
+      });
+      return content;
+    } catch (error) {
+      console.warn(`读取文件失败: ${filePath}`, error.message);
+      return null;
+    }
   }
 
   /**
@@ -74,35 +166,45 @@ class ContextLoader {
   async loadRewriteContext(context, targetChapter, targetFile, userRequest) {
     console.log('📚 加载重写/校验上下文...');
 
-    // 1. 读取当前文件内容
+    // 1. 读取当前文件内容（使用缓存）
     let currentContent = '';
     let currentFilePath = null;
 
     if (targetFile) {
       currentFilePath = this.resolveFilePath(targetFile);
-      try {
-        currentContent = await fs.readFile(currentFilePath, 'utf-8');
+      currentContent = await this.getFileContent(currentFilePath);
+      if (currentContent) {
         context.text_context.current = {
           file: targetFile,
           path: currentFilePath,
           content: currentContent,
           length: currentContent.length
         };
-      } catch (error) {
-        console.warn('无法读取目标文件:', error.message);
       }
     } else if (targetChapter) {
-      const chapterFile = await this.chapterFileManager.getChapterFile(targetChapter);
+      // 检查缓存
+      const cacheKey = this.generateCacheKey('chapter_file', targetChapter);
+      let chapterFile = this.getCached(cacheKey);
+      
+      if (!chapterFile) {
+        chapterFile = await this.chapterFileManager.getChapterFile(targetChapter);
+        if (chapterFile) {
+          this.setCache(cacheKey, chapterFile, 10 * 60 * 1000); // 10分钟缓存
+        }
+      }
+      
       if (chapterFile) {
         currentFilePath = chapterFile.path;
-        currentContent = await fs.readFile(currentFilePath, 'utf-8');
-        context.text_context.current = {
-          file: chapterFile.name,
-          path: currentFilePath,
-          content: currentContent,
-          chapter: targetChapter,
-          length: currentContent.length
-        };
+        currentContent = await this.getFileContent(currentFilePath);
+        if (currentContent) {
+          context.text_context.current = {
+            file: chapterFile.name,
+            path: currentFilePath,
+            content: currentContent,
+            chapter: targetChapter,
+            length: currentContent.length
+          };
+        }
       }
     }
 
@@ -201,43 +303,35 @@ class ContextLoader {
       }
     }
     
-    // 2. 如果记忆系统没有，直接从文件读取
+    // 2. 如果记忆系统没有，直接从文件读取（使用缓存）
     if (settings.length === 0) {
       for (const filename of this.settingFiles) {
         const filepath = path.join(this.workspaceRoot, filename);
-        try {
-          const content = await fs.readFile(filepath, 'utf-8');
-          if (content.trim()) {
-            settings.push({
-              file: filename,
-              content: content,
-              type: 'setting',
-              length: content.length
-            });
-            console.log(`   ✅ 读取设定文件: ${filename} (${content.length} 字)`);
-          }
-        } catch (error) {
-          // 文件不存在，忽略
+        const content = await this.getFileContent(filepath);
+        if (content && content.trim()) {
+          settings.push({
+            file: filename,
+            content: content,
+            type: 'setting',
+            length: content.length
+          });
+          console.log(`   ✅ 读取设定文件: ${filename} (${content.length} 字)`);
         }
       }
     }
     
-    // 3. 如果还是没有，尝试读取人物.md
+    // 3. 如果还是没有，尝试读取人物.md（使用缓存）
     if (settings.length === 0) {
       const characterFile = path.join(this.workspaceRoot, '人物.md');
-      try {
-        const content = await fs.readFile(characterFile, 'utf-8');
-        if (content.trim()) {
-          settings.push({
-            file: '人物.md',
-            content: content,
-            type: 'character',
-            length: content.length
-          });
-          console.log(`   ✅ 读取人物设定: 人物.md (${content.length} 字)`);
-        }
-      } catch (error) {
-        // 文件不存在，忽略
+      const content = await this.getFileContent(characterFile);
+      if (content && content.trim()) {
+        settings.push({
+          file: '人物.md',
+          content: content,
+          type: 'character',
+          length: content.length
+        });
+        console.log(`   ✅ 读取人物设定: 人物.md (${content.length} 字)`);
       }
     }
     
@@ -365,9 +459,80 @@ class ContextLoader {
   }
 
   /**
-   * 加载章节内容
+   * 加载章节内容（优化版：使用缓存和批量操作）
    */
   async loadChapters(chapterNumbers) {
+    if (!chapterNumbers || chapterNumbers.length === 0) {
+      return [];
+    }
+    
+    // 批量加载，使用缓存
+    const results = [];
+    const uncachedChapters = [];
+    
+    // 先检查缓存
+    for (const chapterNum of chapterNumbers) {
+      const cacheKey = this.generateCacheKey('chapter_content', chapterNum);
+      const cached = this.getCached(cacheKey);
+      if (cached) {
+        results.push(cached);
+      } else {
+        uncachedChapters.push(chapterNum);
+      }
+    }
+    
+    // 批量加载未缓存的章节（并行处理，最多3个并发）
+    if (uncachedChapters.length > 0) {
+      const batchSize = 3;
+      for (let i = 0; i < uncachedChapters.length; i += batchSize) {
+        const batch = uncachedChapters.slice(i, i + batchSize);
+        const batchResults = await Promise.all(
+          batch.map(async (chapterNum) => {
+            try {
+              const chapterFile = await this.chapterFileManager.getChapterFile(chapterNum);
+              if (!chapterFile) {
+                return null;
+              }
+              
+              const content = await this.getFileContent(chapterFile.path);
+              if (!content) {
+                return null;
+              }
+              
+              const result = {
+                chapter: chapterNum,
+                file: chapterFile.name,
+                path: chapterFile.path,
+                content: content,
+                length: content.length
+              };
+              
+              // 缓存结果
+              const cacheKey = this.generateCacheKey('chapter_content', chapterNum);
+              this.setCache(cacheKey, result, 10 * 60 * 1000); // 10分钟缓存
+              
+              return result;
+            } catch (error) {
+              console.warn(`加载章节 ${chapterNum} 失败:`, error.message);
+              return null;
+            }
+          })
+        );
+        
+        results.push(...batchResults.filter(r => r !== null));
+      }
+    }
+    
+    // 按章节号排序
+    results.sort((a, b) => a.chapter - b.chapter);
+    
+    return results;
+  }
+  
+  /**
+   * 加载章节内容（旧版，保留兼容性）
+   */
+  async loadChapters_old(chapterNumbers) {
     const chapters = [];
     
     for (const chapterNum of chapterNumbers) {
@@ -410,28 +575,55 @@ class ContextLoader {
     const mapping = this.fileScanner.getChapterMapping();
     const allChapters = Object.keys(mapping || {}).map(n => parseInt(n)).filter(n => n !== targetChapter);
 
-    for (const chapterNum of allChapters) {
-      if (chapterNum === targetChapter) continue; // 跳过当前章节
-
-      try {
-        const content = await this.fileScanner.readChapterContent(chapterNum);
-        if (content) {
-          const lowerContent = content.toLowerCase();
-          // 检查是否包含关键词
-          const matchCount = keywords.filter(kw => lowerContent.includes(kw.toLowerCase())).length;
-          if (matchCount > 0) {
-            relatedChapters.push({
-              chapter: chapterNum,
-              content: content,
-              length: content.length,
-              matchScore: matchCount,
-              preview: content.substring(0, 200) + '...'
-            });
+    // 批量处理，使用缓存（最多处理前20章，避免性能问题）
+    const chaptersToCheck = allChapters.slice(0, 20);
+    const batchSize = 5;
+    
+    for (let i = 0; i < chaptersToCheck.length; i += batchSize) {
+      const batch = chaptersToCheck.slice(i, i + batchSize);
+      const batchResults = await Promise.all(
+        batch.map(async (chapterNum) => {
+          if (chapterNum === targetChapter) return null;
+          
+          try {
+            // 检查缓存
+            const cacheKey = this.generateCacheKey('chapter_content', chapterNum);
+            let content = null;
+            const cached = this.getCached(cacheKey);
+            
+            if (cached && cached.content) {
+              content = cached.content;
+            } else {
+              content = await this.fileScanner.readChapterContent(chapterNum);
+              if (content) {
+                // 缓存结果
+                this.setCache(cacheKey, { content, chapter: chapterNum }, 10 * 60 * 1000);
+              }
+            }
+            
+            if (content) {
+              const lowerContent = content.toLowerCase();
+              // 检查是否包含关键词
+              const matchCount = keywords.filter(kw => lowerContent.includes(kw.toLowerCase())).length;
+              if (matchCount > 0) {
+                return {
+                  chapter: chapterNum,
+                  content: content,
+                  length: content.length,
+                  matchScore: matchCount / keywords.length,
+                  preview: content.substring(0, 200) + '...'
+                };
+              }
+            }
+            return null;
+          } catch (error) {
+            console.warn(`无法读取第${chapterNum}章:`, error.message);
+            return null;
           }
-        }
-      } catch (error) {
-        // 忽略读取错误
-      }
+        })
+      );
+      
+      relatedChapters.push(...batchResults.filter(r => r !== null));
     }
 
     // 按匹配分数排序，返回前 5 个

@@ -409,6 +409,9 @@ class AgentOrchestrator {
         if (!memoryUpdateResult.success) {
           console.warn('记忆更新失败（不影响重写结果）:', memoryUpdateResult.error);
         }
+        
+        // 自动结算机制（如果启用）
+        await this.autoFinalizeChapterIfEnabled(analyzedIntent.target_chapter);
       }
 
       const executionTime = Date.now() - startTime;
@@ -704,7 +707,54 @@ class AgentOrchestrator {
       const readableReport = this.reportGenerator.generateReadableReport(result.report);
       console.log(readableReport);
 
+      // 自动结算机制（如果启用）
+      if (analyzedIntent.target_chapter) {
+        await this.autoFinalizeChapterIfEnabled(analyzedIntent.target_chapter);
+      }
+
       return result;
+  }
+
+  /**
+   * 自动结算章节（如果启用）
+   * @param {number} chapterNumber - 章节号
+   */
+  async autoFinalizeChapterIfEnabled(chapterNumber) {
+    try {
+      // 检查设置：是否启用自动结算
+      const { settings } = require('../database');
+      const autoFinalize = settings.get('autoFinalizeChapter');
+      
+      // 默认不启用，需要用户手动配置
+      if (autoFinalize !== 'true' && autoFinalize !== true) {
+        return;
+      }
+      
+      if (!chapterNumber || !this.memory || !this.memory.initialized) {
+        return;
+      }
+      
+      console.log(`🔄 自动结算第${chapterNumber}章（已启用自动结算）...`);
+      
+      // 检查是否有 ChapterExtract
+      const extract = this.memory.readExtract(chapterNumber);
+      if (!extract) {
+        console.log(`ℹ️ 第${chapterNumber}章没有 ChapterExtract，跳过自动结算`);
+        return;
+      }
+      
+      // 执行结算
+      const result = await this.memory.finalizeChapter(chapterNumber);
+      if (result.success) {
+        console.log(`✅ 第${chapterNumber}章自动结算完成`);
+        this.log('Auto-finalized chapter', { chapter: chapterNumber });
+      } else {
+        console.warn(`⚠️ 第${chapterNumber}章自动结算失败:`, result.error);
+      }
+    } catch (error) {
+      // 自动结算失败不影响主流程
+      console.warn('自动结算失败（不影响主流程）:', error.message);
+    }
   }
 
   /**

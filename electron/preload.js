@@ -168,6 +168,11 @@ contextBridge.exposeInMainWorld('api', {
   // ========== 使用说明 ==========
   guide: {
     read: async () => await ipcRenderer.invoke('guide:read')
+  },
+  // ========== 设置管理 ==========
+  settings: {
+    get: async (key) => await ipcRenderer.invoke('settings:get', key),
+    set: async (key, value) => await ipcRenderer.invoke('settings:set', key, value)
   }
 });
 

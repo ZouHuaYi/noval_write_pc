@@ -2075,6 +2075,28 @@ ${similarChunks.map((chunk, idx) =>
     }
   });
 
+  // ==================== 设置管理 IPC ====================
+  
+  // 获取设置
+  ipcMain.handle('settings:get', async (event, key) => {
+    try {
+      const value = settings.get(key);
+      return { success: true, value };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+  
+  // 设置设置
+  ipcMain.handle('settings:set', async (event, key, value) => {
+    try {
+      settings.set(key, value);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // 读取使用说明文档
   ipcMain.handle('guide:read', async () => {
     try {

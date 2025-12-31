@@ -1056,6 +1056,30 @@ const confirmApplyAllChanges = async () => {
                 await memory.getSummary();
                 await memory.getAllCharacters();
                 await memory.getPendingForeshadows();
+                
+                // 自动结算机制（如果启用）
+                const autoFinalizeResult = await window.api?.settings?.get?.('autoFinalizeChapter');
+                const autoFinalize = autoFinalizeResult?.success && (autoFinalizeResult.value === 'true' || autoFinalizeResult.value === true);
+                if (autoFinalize) {
+                  // 从应用的文件中提取章节号
+                  for (const file of appliedFiles) {
+                    const chapterMatch = file.fileName.match(/第(\d+)/);
+                    if (chapterMatch) {
+                      const chapterNum = parseInt(chapterMatch[1]);
+                      console.log(`🔄 自动结算第${chapterNum}章（已启用自动结算）...`);
+                      try {
+                        const finalizeResult = await window.api?.memory?.finalizeChapter?.(chapterNum);
+                        if (finalizeResult?.success) {
+                          console.log(`✅ 第${chapterNum}章自动结算完成`);
+                        } else {
+                          console.warn(`⚠️ 第${chapterNum}章自动结算失败:`, finalizeResult?.error);
+                        }
+                      } catch (err) {
+                        console.warn(`⚠️ 自动结算失败（不影响主流程）:`, err);
+                      }
+                    }
+                  }
+                }
               } else {
                 console.log('ℹ️ 无需更新记忆');
               }
