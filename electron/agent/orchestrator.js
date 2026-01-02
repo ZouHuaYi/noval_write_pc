@@ -25,6 +25,8 @@ const PerformanceOptimizer = require('./utils/performanceOptimizer'); // 性能�
 const ReportGenerator = require('./utils/reportGenerator'); // 报告生成器
 const SkillExecutor = require('./skills/core/skillExecutor'); // Skill 执行器
 const SkillRouter = require('./skills/core/skillRouter'); // Skill 路由器
+const PlannerAgent = require('./skills/core/plannerAgent'); // Planner Agent
+const AgentState = require('./skills/core/agentState'); // Agent 状态
 const { AgentStates } = require('../memory/types');
 const fs = require('fs').promises;
 const path = require('path');
@@ -54,6 +56,7 @@ class AgentOrchestrator {
     this.contextLoader = null; // 智能上下文加载器（新增）
     this.skillExecutor = null; // Skill 执行器（新增）
     this.skillRouter = null; // Skill 路由器（新增）
+    this.plannerAgent = null; // Planner Agent（新增）
     this.currentTask = null;
     this.executionLog = [];
     this.initialized = false;
@@ -108,6 +111,7 @@ class AgentOrchestrator {
 
       // 初始化 Skill 系统（新增）
       this.skillRouter = new SkillRouter();
+      this.plannerAgent = new PlannerAgent();
       this.skillExecutor = new SkillExecutor(this.workspaceRoot, {
         memory: this.memory,
         contextLoader: this.contextLoader,
@@ -162,7 +166,7 @@ class AgentOrchestrator {
   }
 
   /**
-   * 使用 Skill 架构执行任务（新增）
+   * 使用 Skill 架构执行任务（重构版：Router -> Planner -> Skill）
    * @param {Object} request - 用户请求
    * @param {Function} llmCaller - LLM 调用函数
    */
@@ -182,100 +186,172 @@ class AgentOrchestrator {
       steps: []
     };
 
-    this.log('Task started (Skill mode)', { taskId: this.currentTask.id, request: request.userRequest });
+    this.log('Task started (Planner mode)', { taskId: this.currentTask.id, request: request.userRequest });
 
     try {
-      // 步骤 1: 分析意图并路由 Skill
+      // 步骤 1: Router 路由（只做意图粗分类）
       this.setState(AgentStates.LOAD_CONTEXT);
-      this.addStep('route_skills', '路由 Skill 序列');
+      this.addStep('route', '路由意图');
       
-      const routeResult = this.skillRouter.route(request, {
+      const routed = this.skillRouter.route(request, {
         workspaceRoot: this.workspaceRoot,
         targetChapter: request.targetChapter,
         targetFile: request.targetFile
       });
 
-      this.log('Skills routed', { 
-        intentType: routeResult.intentType,
-        skillCount: routeResult.skills.length 
+      this.log('Router 路由完成', { 
+        intent: routed.intent,
+        hasSelection: routed.hasSelection
       });
 
-      // 步骤 2: 执行 Skill 序列
-      const skillResults = [];
-      const executionContext = {
-        workspaceRoot: this.workspaceRoot,
-        targetChapter: request.targetChapter,
-        targetFile: request.targetFile,
-        userRequest: request.userRequest
-      };
-
+      // 步骤 2: 初始化 AgentState
+      const agentState = new AgentState();
+      agentState.targetChapter = request.targetChapter;
+      
       // 保存当前执行状态（用于分阶段执行）
       this.pendingExecution = {
-        routeResult,
+        routed,
+        agentState: agentState.clone(),
         skillResults: [],
-        executionContext,
-        currentSkillIndex: 0,
         llmCaller
       };
 
-      for (let i = 0; i < routeResult.skills.length; i++) {
-        const skillPlan = routeResult.skills[i];
-        this.pendingExecution.currentSkillIndex = i;
+      // 步骤 3: Planner Agent 循环执行
+      const skillResults = [];
+      const maxIterations = 50; // 防止无限循环
+      let iteration = 0;
+      
+      // 重置 Planner 的执行计数
+      this.plannerAgent.resetExecutionCounts();
+      
+      // 保存上一轮状态（用于检测状态变化）
+      let previousState = agentState.clone();
+
+      while (iteration < maxIterations) {
+        iteration++;
         
-        this.addStep(`execute_${skillPlan.name}`, `执行 ${skillPlan.name}`);
+        // 检查目标是否已满足
+        const goalStates = this.getGoalStates(routed.intent);
+        if (this.plannerAgent.isGoalSatisfied(goalStates, agentState)) {
+          this.log('目标状态已满足，任务完成', { goalStates });
+          break;
+        }
         
-        // 检查条件（如果有）
-        if (skillPlan.condition && !this.evaluateCondition(skillPlan.condition, executionContext)) {
-          this.log(`跳过 Skill: ${skillPlan.name} (条件不满足)`);
-          continue;
+        // Planner 规划下一步
+        this.addStep('plan', `规划步骤 ${iteration}`);
+        const plan = await this.plannerAgent.plan({
+          intent: routed.intent,
+          state: agentState,
+          request: {
+            ...request,
+            workspaceRoot: this.workspaceRoot
+          }
+        }, llmCaller);
+
+        // 如果没有更多步骤，退出循环
+        if (!plan.steps || plan.steps.length === 0) {
+          this.log('Planner 返回空步骤，任务完成');
+          break;
         }
 
-        // 下文动态补充输入参数（从执行上中取获）
-        const finalInput = this.enrichSkillInput(skillPlan.name, skillPlan.input, executionContext);
-
-        const result = await this.skillExecutor.execute(
-          skillPlan.name,
-          finalInput,
-          { llmCaller, context: executionContext }
-        );
-
-        skillResults.push(result);
-        this.pendingExecution.skillResults = skillResults;
-
-        // 如果 Skill 失败且是关键步骤，中断执行
-        if (!result.success && this.isCriticalSkill(skillPlan.name)) {
-          throw new Error(`关键 Skill 执行失败: ${skillPlan.name} - ${result.error}`);
-        }
-
-        // 更新执行上下文（将 Skill 结果传递给下一个 Skill）
-        // 只有在成功时才更新上下文
-        if (result.success && result.result) {
-          this.updateExecutionContext(executionContext, skillPlan.name, result.result);
-        }
-
-        // 特殊处理：plan_chapter_outline 需要用户确认
-        if (skillPlan.name === 'plan_chapter_outline' && result.result?.requiresUserConfirmation) {
-          this.log('等待用户确认大纲', { outline: result.result.outline });
-          this.setState(AgentStates.WAITING_USER_CONFIRMATION);
+        // 执行规划中的每个 Skill
+        for (const step of plan.steps) {
+          this.addStep(`execute_${step.skill}`, `执行 ${step.skill} (${step.reason})`);
           
-          // 返回中间结果，等待用户确认
-          return {
-            success: true,
-            requiresUserConfirmation: true,
-            confirmationType: 'outline',
-            outline: result.result.outline,
-            scenes: result.result.scenes,
-            executionContext: this.sanitizeForIPC(executionContext),
-            skillResults: this.sanitizeSkillResults(skillResults),
-            pendingExecution: this.sanitizePendingExecution(this.pendingExecution)
-          };
+          // 从 AgentState 构建 Skill 输入
+          const skillInput = agentState.buildSkillInput(step.skill, {
+            ...request,
+            workspaceRoot: this.workspaceRoot
+          });
+
+          // 执行 Skill
+          const result = await this.skillExecutor.execute(
+            step.skill,
+            skillInput,
+            { llmCaller, context: agentState.buildContextForIntent() }
+          );
+
+          skillResults.push({
+            skill: step.skill,
+            success: result.success,
+            result: result.result,
+            error: result.error,
+            duration: result.duration
+          });
+
+          // 如果 Skill 失败且是关键步骤，中断执行
+          if (!result.success && this.isCriticalSkill(step.skill)) {
+            throw new Error(`关键 Skill 执行失败: ${step.skill} - ${result.error}`);
+          }
+
+          // 更新 AgentState（从 Skill 输出）
+          if (result.success && result.result) {
+            const oldState = agentState.clone();
+            agentState.updateFromSkillOutput(step.skill, result.result);
+            
+            // 记录 Skill 执行
+            this.plannerAgent.recordSkillExecution(step.skill);
+            
+            // 检查状态是否发生变化（避免无限循环）
+            const produces = step.produces || 'unknown';
+            if (!this.plannerAgent.hasStateChanged(oldState, agentState, produces)) {
+              logger.logAgent(`Skill ${step.skill} 执行后状态未变化，可能陷入循环`, {}, 'WARN');
+            }
+          }
+
+          // 特殊处理：plan_chapter_outline 需要用户确认
+          if (step.skill === 'plan_chapter_outline' && result.result?.requiresUserConfirmation) {
+            this.log('等待用户确认大纲', { outline: result.result.outline });
+            this.setState(AgentStates.WAITING_USER_CONFIRMATION);
+            
+            // 更新 pendingExecution
+            this.pendingExecution.agentState = agentState.clone();
+            this.pendingExecution.skillResults = skillResults;
+            
+            // 返回中间结果，等待用户确认
+            return {
+              success: true,
+              requiresUserConfirmation: true,
+              confirmationType: 'outline',
+              outline: result.result.outline,
+              scenes: result.result.scenes,
+              agentState: this.sanitizeForIPC(agentState),
+              skillResults: this.sanitizeSkillResults(skillResults),
+              pendingExecution: this.sanitizePendingExecution(this.pendingExecution)
+            };
+          }
+
+          // 检查是否达到终止状态
+          if (agentState.isTerminalState()) {
+            this.log('达到终止状态，任务完成');
+            break;
+          }
         }
 
-        // 新流程：check_all -> generate_rewrite_plan -> rewrite_with_plan
+        // 检查是否达到终止状态
+        if (agentState.isTerminalState()) {
+          break;
+        }
+        
+        // 更新上一轮状态
+        previousState = agentState.clone();
       }
 
-      // 步骤 3: 汇总结果
-      const finalResult = this.aggregateSkillResults(skillResults, routeResult);
+      if (iteration >= maxIterations) {
+        logger.logAgent('达到最大迭代次数，强制退出', { iteration }, 'WARN');
+      }
+      
+      // 最终检查：如果目标未满足，记录警告
+      const goalStates = this.getGoalStates(routed.intent);
+      if (!this.plannerAgent.isGoalSatisfied(goalStates, agentState)) {
+        logger.logAgent('任务完成但目标状态未完全满足', { 
+          goalStates, 
+          missing: this.plannerAgent.getMissingStates(goalStates, agentState)
+        }, 'WARN');
+      }
+
+      // 步骤 4: 汇总结果
+      const finalResult = this.aggregateSkillResultsFromState(skillResults, agentState);
 
       const executionTime = Date.now() - startTime;
       this.statistics.successfulTasks++;
@@ -286,9 +362,10 @@ class AgentOrchestrator {
       this.currentTask.executionTime = executionTime;
       this.setState(AgentStates.DONE);
 
-      this.log('Task completed (Skill mode)', { 
+      this.log('Task completed (Planner mode)', { 
         executionTime: `${(executionTime / 1000).toFixed(2)}s`,
-        skillCount: skillResults.length
+        skillCount: skillResults.length,
+        iterations: iteration
       });
 
       return {
@@ -309,7 +386,7 @@ class AgentOrchestrator {
       this.currentTask.executionTime = executionTime;
       this.setState(AgentStates.ERROR);
 
-      this.log('Task failed (Skill mode)', { error: error.message });
+      this.log('Task failed (Planner mode)', { error: error.message });
       throw error;
     }
   }
@@ -326,55 +403,89 @@ class AgentOrchestrator {
     }
 
     const { userModifiedOutline } = options;
-    const { routeResult, skillResults, executionContext, currentSkillIndex } = this.pendingExecution;
+    const { routed, agentState: savedState, skillResults } = this.pendingExecution;
 
-    // 如果用户修改了大纲，更新执行上下文
-    if (userModifiedOutline) {
-      executionContext.userModifiedOutline = userModifiedOutline;
+    // 恢复 AgentState
+    const AgentStateClass = require('./skills/core/agentState');
+    const agentState = AgentStateClass.fromSerialized ? 
+      AgentStateClass.fromSerialized(savedState) : 
+      Object.assign(new AgentStateClass(), savedState);
+
+    // 如果用户修改了大纲，更新 AgentState
+    if (userModifiedOutline && agentState.chapterPlan) {
+      agentState.chapterPlan.outline = userModifiedOutline;
+      agentState.outline = userModifiedOutline;
     }
 
-    // 从上次中断的地方继续执行
+    // 从上次中断的地方继续执行（使用 Planner 循环）
     const startTime = Date.now();
     this.setState(AgentStates.PLAN_INTENT);
 
     try {
-      for (let i = currentSkillIndex + 1; i < routeResult.skills.length; i++) {
-        const skillPlan = routeResult.skills[i];
-        this.pendingExecution.currentSkillIndex = i;
+      const maxIterations = 50;
+      let iteration = 0;
+
+      while (iteration < maxIterations) {
+        iteration++;
         
-        this.addStep(`execute_${skillPlan.name}`, `执行 ${skillPlan.name}`);
+        // Planner 规划下一步
+        this.addStep('plan', `规划步骤 ${iteration} (继续)`);
+        const plan = await this.plannerAgent.plan({
+          intent: routed.intent,
+          state: agentState,
+          request: {
+            workspaceRoot: this.workspaceRoot,
+            targetChapter: agentState.targetChapter
+          }
+        }, llmCaller);
 
-        // 检查条件
-        if (skillPlan.condition && !this.evaluateCondition(skillPlan.condition, executionContext)) {
-          this.log(`跳过 Skill: ${skillPlan.name} (条件不满足)`);
-          continue;
+        if (!plan.steps || plan.steps.length === 0) {
+          break;
         }
 
-        // 动态补充输入参数
-        const finalInput = this.enrichSkillInput(skillPlan.name, skillPlan.input, executionContext);
+        // 执行规划中的每个 Skill
+        for (const step of plan.steps) {
+          this.addStep(`execute_${step.skill}`, `执行 ${step.skill} (${step.reason})`);
+          
+          const skillInput = agentState.buildSkillInput(step.skill, {
+            workspaceRoot: this.workspaceRoot,
+            targetChapter: agentState.targetChapter
+          });
 
-        const result = await this.skillExecutor.execute(
-          skillPlan.name,
-          finalInput,
-          { llmCaller, context: executionContext }
-        );
+          const result = await this.skillExecutor.execute(
+            step.skill,
+            skillInput,
+            { llmCaller, context: agentState.buildContextForIntent() }
+          );
 
-        skillResults.push(result);
-        this.pendingExecution.skillResults = skillResults;
+          skillResults.push({
+            skill: step.skill,
+            success: result.success,
+            result: result.result,
+            error: result.error,
+            duration: result.duration
+          });
 
-        // 如果 Skill 失败且是关键步骤，中断执行
-        if (!result.success && this.isCriticalSkill(skillPlan.name)) {
-          throw new Error(`关键 Skill 执行失败: ${skillPlan.name} - ${result.error}`);
+          if (!result.success && this.isCriticalSkill(step.skill)) {
+            throw new Error(`关键 Skill 执行失败: ${step.skill} - ${result.error}`);
+          }
+
+          if (result.success && result.result) {
+            agentState.updateFromSkillOutput(step.skill, result.result);
+          }
+
+          if (agentState.isTerminalState()) {
+            break;
+          }
         }
 
-        // 更新执行上下文
-        if (result.success && result.result) {
-          this.updateExecutionContext(executionContext, skillPlan.name, result.result);
+        if (agentState.isTerminalState()) {
+          break;
         }
       }
 
       // 汇总结果
-      const finalResult = this.aggregateSkillResults(skillResults, routeResult);
+      const finalResult = this.aggregateSkillResultsFromState(skillResults, agentState);
 
       const executionTime = Date.now() - startTime;
       this.statistics.successfulTasks++;
@@ -481,239 +592,11 @@ class AgentOrchestrator {
   }
 
   /**
-   * 丰富 Skill 输入参数（从执行上下文中动态获取）
+   * 获取目标状态（根据 Intent）
    */
-  enrichSkillInput(skillName, input, executionContext) {
-    const enriched = { ...input };
-    
-    switch (skillName) {
-      case 'analyze_previous_chapters':
-        // 如果 targetChapter 不存在，从执行上下文中获取
-        if (!enriched.targetChapter) {
-          if (executionContext.targetChapter) {
-            enriched.targetChapter = executionContext.targetChapter;
-          } else if (executionContext.scanResult) {
-            // 从扫描结果中获取
-            if (executionContext.scanResult.latestChapter) {
-              enriched.targetChapter = executionContext.scanResult.latestChapter + 1;
-            } else if (executionContext.scanResult.totalChapters > 0) {
-              enriched.targetChapter = executionContext.scanResult.totalChapters + 1;
-            }
-          }
-          // 如果仍然没有，使用默认值 1
-          if (!enriched.targetChapter || enriched.targetChapter < 1) {
-            enriched.targetChapter = 1;
-          }
-        }
-        break;
-      
-      case 'plan_chapter_outline':
-        // 确保 chapterGoal 存在
-        if (!enriched.chapterGoal) {
-          enriched.chapterGoal = executionContext.userRequest || '续写新章节';
-        }
-        // 确保 targetChapter 存在
-        if (!enriched.targetChapter) {
-          if (executionContext.targetChapter) {
-            enriched.targetChapter = executionContext.targetChapter;
-          } else if (executionContext.scanResult) {
-            if (executionContext.scanResult.latestChapter) {
-              enriched.targetChapter = executionContext.scanResult.latestChapter + 1;
-            } else if (executionContext.scanResult.totalChapters > 0) {
-              enriched.targetChapter = executionContext.scanResult.totalChapters + 1;
-            }
-          }
-          if (!enriched.targetChapter || enriched.targetChapter < 1) {
-            enriched.targetChapter = 1;
-          }
-        }
-        // 确保 previousAnalyses 存在
-        if (!enriched.previousAnalyses) {
-          enriched.previousAnalyses = executionContext.previousAnalyses || [];
-        }
-        break;
-      
-      case 'save_chapter':
-        // 如果 chapterId 不存在，尝试从多个来源获取
-        if (!enriched.chapterId) {
-          // 1. 从执行上下文中获取
-          if (executionContext.targetChapter) {
-            enriched.chapterId = executionContext.targetChapter;
-          }
-          // 2. 从 filePath 中提取章节号
-          else if (enriched.filePath) {
-            const match = enriched.filePath.match(/第(\d+)章|chapter[_\s]?(\d+)|(\d+)\.(md|txt)/);
-            if (match) {
-              enriched.chapterId = parseInt(match[1] || match[2] || match[3]);
-            }
-          }
-          // 3. 从 scanResult 中获取
-          else if (executionContext.scanResult) {
-            if (executionContext.scanResult.latestChapter) {
-              enriched.chapterId = executionContext.scanResult.latestChapter + 1;
-            } else if (executionContext.scanResult.totalChapters > 0) {
-              enriched.chapterId = executionContext.scanResult.totalChapters + 1;
-            }
-          }
-        }
-        
-        // 确保 content 存在（从执行上下文中获取）
-        if (!enriched.content && executionContext.content) {
-          enriched.content = executionContext.content;
-        }
-        // 如果还是没有，尝试从 finalContent 获取
-        if (!enriched.content && executionContext.finalContent) {
-          enriched.content = executionContext.finalContent;
-        }
-        // 如果还是没有，尝试从 rewrittenContent 获取
-        if (!enriched.content && executionContext.rewrittenContent) {
-          enriched.content = executionContext.rewrittenContent;
-        }
-        break;
-      
-      case 'check_all':
-      case 'generate_rewrite_plan':
-      case 'rewrite_with_plan':
-        // 确保 content 存在（从执行上下文中获取）
-        if (!enriched.content) {
-          if (executionContext.content) {
-            enriched.content = executionContext.content;
-          } else if (executionContext.finalContent) {
-            enriched.content = executionContext.finalContent;
-          } else if (executionContext.rewrittenContent) {
-            enriched.content = executionContext.rewrittenContent;
-          }
-        }
-        
-        // 对于 generate_rewrite_plan，确保 checkResult 存在
-        if (skillName === 'generate_rewrite_plan' && !enriched.checkResult) {
-          enriched.checkResult = executionContext.checkResult || {};
-        }
-        
-        // 对于 rewrite_with_plan，确保 rewritePlan 存在
-        if (skillName === 'rewrite_with_plan' && !enriched.rewritePlan) {
-          enriched.rewritePlan = executionContext.rewritePlan || '';
-        }
-        break;
-    }
-    
-    return enriched;
-  }
-
-  /**
-   * 更新执行上下文
-   */
-  updateExecutionContext(context, skillName, result) {
-    switch (skillName) {
-      case 'load_story_context':
-        context.worldRules = result.worldRules;
-        context.characters = result.characters;
-        context.plotState = result.plotState;
-        context.foreshadows = result.foreshadows;
-        break;
-      
-      case 'scan_chapters':
-        context.scanResult = result;
-        break;
-      
-      case 'analyze_previous_chapters':
-        // 安全地获取 analyses，如果 result 不存在或没有 analyses，使用空数组
-        if (result && result.analyses) {
-          context.previousAnalyses = result.analyses;
-        } else {
-          context.previousAnalyses = [];
-        }
-        break;
-      
-      case 'load_chapter_content':
-        context.existingContent = result.content;
-        context.chapter = result.chapter;
-        break;
-      
-      case 'plan_chapter':
-        context.outline = result.outline;
-        context.chapterPlan = result;
-        break;
-      
-      case 'plan_chapter_outline':
-        context.outline = result.outline;
-        context.scenes = result.scenes;
-        context.chapterPlan = result;
-        break;
-      
-      case 'plan_intent':
-        context.intent = result;
-        context.constraints = result.constraints;
-        context.style = result.writing_guidelines;
-        break;
-      
-      case 'write_chapter':
-        context.content = result.content;
-        break;
-      
-      case 'rewrite_selected_text':
-        context.content = result.rewrittenText;
-        break;
-      
-      case 'rewrite_with_plan':
-        context.content = result.rewrittenContent;
-        context.rewriteChanges = result.changes;
-        break;
-      
-      case 'check_all':
-        context.checkResult = result;
-        break;
-      
-      case 'generate_rewrite_plan':
-        context.rewritePlan = result.rewritePlan;
-        context.rewritePriority = result.priority;
-        context.estimatedChanges = result.estimatedChanges;
-        break;
-      
-      case 'check_coherence':
-        context.coherenceResult = result;
-        break;
-      
-      case 'analyze_curves':
-        context.pacingAnalysis = result.pacingAnalysis;
-        context.emotionAnalysis = result.emotionAnalysis;
-        context.densityAnalysis = result.densityAnalysis;
-        context.pacingComparison = result.pacingComparison;
-        context.emotionComparison = result.emotionComparison;
-        context.densityComparison = result.densityComparison;
-        break;
-      
-      case 'check_character_consistency':
-      case 'check_world_rule_violation':
-        if (!context.checkResult) {
-          context.checkResult = { errors: [], warnings: [] };
-        }
-        if (result.violations) {
-          context.checkResult.errors.push(...result.violations);
-        }
-        break;
-      
-      // 注意：check_all 已在上面处理
-      
-      case 'update_memory':
-        context.memoryUpdated = result.success;
-        break;
-      
-      case 'finalize_chapter':
-        context.finalContent = result.finalContent;
-        break;
-    }
-  }
-
-  /**
-   * 评估条件（用于条件执行）
-   */
-  evaluateCondition(condition, context) {
-    // 简单的条件评估，可以根据需要扩展
-    if (typeof condition === 'function') {
-      return condition(context);
-    }
-    return true;
+  getGoalStates(intent) {
+    const { GOAL_STATES } = require('./skills/core/stateContracts');
+    return GOAL_STATES[intent] || GOAL_STATES.CREATE;
   }
 
   /**
@@ -795,18 +678,9 @@ class AgentOrchestrator {
     }
     
     return {
-      currentSkillIndex: pendingExecution.currentSkillIndex,
-      routeResult: {
-        intentType: pendingExecution.routeResult?.intentType,
-        skills: pendingExecution.routeResult?.skills?.map(skill => ({
-          name: skill.name,
-          input: this.sanitizeForIPC(skill.input),
-          condition: null // 条件通常是函数，不能序列化
-        })) || [],
-        pattern: pendingExecution.routeResult?.pattern || []
-      },
-      skillResults: this.sanitizeSkillResults(pendingExecution.skillResults || []),
-      executionContext: this.sanitizeForIPC(pendingExecution.executionContext)
+      routed: this.sanitizeForIPC(pendingExecution.routed),
+      agentState: this.sanitizeForIPC(pendingExecution.agentState),
+      skillResults: this.sanitizeSkillResults(pendingExecution.skillResults || [])
       // 移除 llmCaller（函数不能序列化）
     };
   }
@@ -852,116 +726,19 @@ class AgentOrchestrator {
   }
 
   /**
-   * 汇总 Skill 结果
+   * 从 AgentState 汇总结果（新方法）
    */
-  aggregateSkillResults(skillResults, routeResult) {
-    const result = {
-      text: '',
-      intent: null,
-      checkResult: null,
-      coherenceResult: null,
-      pacingAnalysis: null,
-      emotionAnalysis: null,
-      densityAnalysis: null,
-      pacingComparison: null,
-      emotionComparison: null,
-      densityComparison: null,
-      chapterPlan: null,
-      rewriteCount: 0,
+  aggregateSkillResultsFromState(skillResults, agentState) {
+    return {
+      text: agentState.getContent(),
+      intent: agentState.intent,
+      checkResult: agentState.checkResults.overall || agentState.checkResults,
+      coherenceResult: agentState.checkResults.coherence,
+      chapterPlan: agentState.chapterPlan,
+      rewriteCount: skillResults.filter(r => r.skill === 'rewrite_selected_text' || r.skill === 'rewrite_with_plan').length,
       executionLog: this.executionLog.slice(-10)
     };
-
-    // 提取最终文本（按优先级：rewrite_with_plan > write_chapter > rewrite_selected_text）
-    for (const skillResult of [...skillResults].reverse()) {
-      if (skillResult.success && skillResult.result) {
-        // 优先使用 rewrite_with_plan 的结果
-        if (skillResult.skill === 'rewrite_with_plan' && skillResult.result.rewrittenContent) {
-          result.text = skillResult.result.rewrittenContent;
-          break;
-        }
-        // 其次使用 write_chapter 的结果
-        if (skillResult.skill === 'write_chapter' && skillResult.result.content) {
-          result.text = skillResult.result.content;
-          break;
-        }
-        // 最后使用 rewrite_selected_text 的结果
-        if (skillResult.skill === 'rewrite_selected_text' && skillResult.result.rewrittenText) {
-          result.text = skillResult.result.rewrittenText;
-          break;
-        }
-        // 兼容其他可能的字段名
-        if (skillResult.result.content) {
-          result.text = skillResult.result.content;
-          break;
-        } else if (skillResult.result.rewrittenText) {
-          result.text = skillResult.result.rewrittenText;
-          break;
-        } else if (skillResult.result.rewrittenContent) {
-          result.text = skillResult.result.rewrittenContent;
-          break;
-        }
-      }
-    }
-
-    // 提取各种结果
-    for (const skillResult of skillResults) {
-      if (!skillResult.success || !skillResult.result) continue;
-
-      switch (skillResult.skill) {
-        case 'plan_intent':
-          result.intent = skillResult.result;
-          break;
-        
-        case 'plan_chapter':
-          result.chapterPlan = skillResult.result;
-          break;
-        
-        case 'check_coherence':
-          result.coherenceResult = skillResult.result;
-          break;
-        
-        case 'analyze_curves':
-          result.pacingAnalysis = skillResult.result.pacingAnalysis;
-          result.emotionAnalysis = skillResult.result.emotionAnalysis;
-          result.densityAnalysis = skillResult.result.densityAnalysis;
-          result.pacingComparison = skillResult.result.pacingComparison;
-          result.emotionComparison = skillResult.result.emotionComparison;
-          result.densityComparison = skillResult.result.densityComparison;
-          break;
-        
-        case 'check_character_consistency':
-        case 'check_world_rule_violation':
-          if (!result.checkResult) {
-            result.checkResult = { errors: [], warnings: [] };
-          }
-          if (skillResult.result.violations) {
-            result.checkResult.errors.push(...skillResult.result.violations);
-          }
-          break;
-        
-        case 'check_all':
-          // check_all 返回完整的检查结果
-          result.checkResult = skillResult.result;
-          break;
-        
-        case 'plan_chapter_outline':
-          result.chapterPlan = skillResult.result;
-          break;
-      }
-    }
-
-    // 汇总检查结果状态
-    if (result.checkResult) {
-      result.checkResult.status = result.checkResult.errors.length === 0 ? 'pass' : 'fail';
-    }
-
-    // 提取重写次数
-    const rewriteResults = skillResults.filter(r => r.skill === 'rewrite_selected_text');
-    result.rewriteCount = rewriteResults.length;
-
-    return result;
   }
-
 
   /**
    * 自动结算章节（如果启用）
