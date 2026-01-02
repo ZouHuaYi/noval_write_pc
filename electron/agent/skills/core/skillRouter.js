@@ -194,12 +194,35 @@ class SkillRouter {
         return {};
       
       case 'analyze_previous_chapters':
+        // 确保 targetChapter 存在，如果不存在则从 scanResult 中获取
+        let targetChapter = baseInput.chapterNumber;
+        if (!targetChapter && context.scanResult) {
+          // 从扫描结果中获取最新的章节号，然后 +1 作为目标章节
+          if (context.scanResult.latestChapter) {
+            targetChapter = context.scanResult.latestChapter + 1;
+          } else if (context.scanResult.totalChapters > 0) {
+            // 如果没有 latestChapter，使用 totalChapters
+            targetChapter = context.scanResult.totalChapters + 1;
+          }
+        }
+        // 如果仍然没有，使用默认值 1
+        if (!targetChapter || targetChapter < 1) {
+          targetChapter = 1;
+        }
         return {
-          targetChapter: baseInput.chapterNumber,
-          recentCount: 3
+          targetChapter: targetChapter,
+          recentCount: request.recentCount || 3
         };
       
       case 'plan_chapter':
+        return {
+          chapterGoal: request.userRequest || '续写新章节',
+          contextSummary: context.summary || '',
+          targetChapter: baseInput.chapterNumber,
+          previousAnalyses: context.previousAnalyses || []
+        };
+      
+      case 'plan_chapter_outline':
         return {
           chapterGoal: request.userRequest || '续写新章节',
           contextSummary: context.summary || '',
@@ -267,10 +290,15 @@ class SkillRouter {
         };
       
       case 'save_chapter':
+        // 尝试从多个来源获取内容
+        const saveContent = context.finalContent || 
+                           context.content || 
+                           context.rewrittenContent || 
+                           '';
         return {
-          chapterId: baseInput.chapterId,
-          content: context.finalContent || context.content || '',
-          filePath: request.targetFile
+          chapterId: baseInput.chapterId || baseInput.chapterNumber,
+          content: saveContent,
+          filePath: request.targetFile || context.targetFile
         };
       
       case 'finalize_chapter':
@@ -278,6 +306,29 @@ class SkillRouter {
           content: context.content || '',
           checks: context.checkResult || {},
           chapterNumber: baseInput.chapterNumber
+        };
+      
+      case 'check_all':
+        return {
+          content: context.content || request.content || '',
+          characters: context.characters || [],
+          worldRules: context.worldRules || {},
+          context: context
+        };
+      
+      case 'generate_rewrite_plan':
+        return {
+          content: context.content || request.content || '',
+          checkResult: context.checkResult || {},
+          context: context
+        };
+      
+      case 'rewrite_with_plan':
+        return {
+          content: context.content || request.content || '',
+          rewritePlan: context.rewritePlan || '',
+          context: context,
+          intent: context.intent || {}
         };
       
       default:

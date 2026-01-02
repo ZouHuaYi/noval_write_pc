@@ -326,14 +326,36 @@ ${JSON.stringify(checkResult, null, 2)}
         maxTokens: 2000
       });
 
-      // 解析结果
-      let parsed;
+      // 解析结果（清理可能的代码块标记）
+      let responseText = '';
       if (typeof result === 'string') {
-        parsed = JSON.parse(result);
+        responseText = result;
       } else if (result.success && result.response) {
-        parsed = JSON.parse(result.response);
+        responseText = typeof result.response === 'string' ? result.response : String(result.response);
+      } else if (result.response) {
+        responseText = typeof result.response === 'string' ? result.response : String(result.response);
       } else {
         throw new Error('Invalid LLM response');
+      }
+      
+      // 清理代码块标记
+      responseText = responseText
+        .replace(/```json\s*/g, '')
+        .replace(/```\s*/g, '')
+        .trim();
+      
+      // 尝试提取 JSON 部分（如果包含其他文本）
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        responseText = jsonMatch[0];
+      }
+      
+      let parsed;
+      try {
+        parsed = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('JSON 解析失败，原始响应:', responseText);
+        throw new Error(`JSON 解析失败: ${parseError.message}`);
       }
 
       return {

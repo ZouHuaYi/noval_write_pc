@@ -351,10 +351,10 @@ ${content.substring(0, 2000)}${content.length > 2000 ? '...' : ''}
     // 3. 连贯性检查（如果有连贯性检查器）
     if (this.dependencies?.coherenceChecker) {
       checkPromises.push(
-        this.dependencies.coherenceChecker.check(
+        this.dependencies.coherenceChecker.checkCoherence(
           content,
           previousAnalyses,
-          context,
+          context.chapterPlan || null,
           llmCaller
         ).then(result => ({
           coherenceIssues: result.errors || [],

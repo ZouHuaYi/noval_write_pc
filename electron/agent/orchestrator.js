@@ -239,9 +239,12 @@ class AgentOrchestrator {
           continue;
         }
 
+        // 动态补充输入参数（从执行上下文中获取）
+        const finalInput = this.enrichSkillInput(skillPlan.name, skillPlan.input, executionContext);
+
         const result = await this.skillExecutor.execute(
           skillPlan.name,
-          skillPlan.input,
+          finalInput,
           { llmCaller, context: executionContext }
         );
 
@@ -254,7 +257,10 @@ class AgentOrchestrator {
         }
 
         // 更新执行上下文（将 Skill 结果传递给下一个 Skill）
-        this.updateExecutionContext(executionContext, skillPlan.name, result.result);
+        // 只有在成功时才更新上下文
+        if (result.success && result.result) {
+          this.updateExecutionContext(executionContext, skillPlan.name, result.result);
+        }
 
         // 特殊处理：plan_chapter_outline 需要用户确认
         if (skillPlan.name === 'plan_chapter_outline' && result.result?.requiresUserConfirmation) {
@@ -268,9 +274,9 @@ class AgentOrchestrator {
             confirmationType: 'outline',
             outline: result.result.outline,
             scenes: result.result.scenes,
-            executionContext,
-            skillResults,
-            pendingExecution: this.pendingExecution
+            executionContext: this.sanitizeForIPC(executionContext),
+            skillResults: this.sanitizeSkillResults(skillResults),
+            pendingExecution: this.sanitizePendingExecution(this.pendingExecution)
           };
         }
 
@@ -299,7 +305,7 @@ class AgentOrchestrator {
         success: true,
         ...finalResult,
         executionTime,
-        skillResults,
+        skillResults: this.sanitizeSkillResults(skillResults),
         statistics: this.getTaskStatistics()
       };
 
@@ -327,6 +333,126 @@ class AgentOrchestrator {
   }
 
   /**
+   * 丰富 Skill 输入参数（从执行上下文中动态获取）
+   */
+  enrichSkillInput(skillName, input, executionContext) {
+    const enriched = { ...input };
+    
+    switch (skillName) {
+      case 'analyze_previous_chapters':
+        // 如果 targetChapter 不存在，从执行上下文中获取
+        if (!enriched.targetChapter) {
+          if (executionContext.targetChapter) {
+            enriched.targetChapter = executionContext.targetChapter;
+          } else if (executionContext.scanResult) {
+            // 从扫描结果中获取
+            if (executionContext.scanResult.latestChapter) {
+              enriched.targetChapter = executionContext.scanResult.latestChapter + 1;
+            } else if (executionContext.scanResult.totalChapters > 0) {
+              enriched.targetChapter = executionContext.scanResult.totalChapters + 1;
+            }
+          }
+          // 如果仍然没有，使用默认值 1
+          if (!enriched.targetChapter || enriched.targetChapter < 1) {
+            enriched.targetChapter = 1;
+          }
+        }
+        break;
+      
+      case 'plan_chapter_outline':
+        // 确保 chapterGoal 存在
+        if (!enriched.chapterGoal) {
+          enriched.chapterGoal = executionContext.userRequest || '续写新章节';
+        }
+        // 确保 targetChapter 存在
+        if (!enriched.targetChapter) {
+          if (executionContext.targetChapter) {
+            enriched.targetChapter = executionContext.targetChapter;
+          } else if (executionContext.scanResult) {
+            if (executionContext.scanResult.latestChapter) {
+              enriched.targetChapter = executionContext.scanResult.latestChapter + 1;
+            } else if (executionContext.scanResult.totalChapters > 0) {
+              enriched.targetChapter = executionContext.scanResult.totalChapters + 1;
+            }
+          }
+          if (!enriched.targetChapter || enriched.targetChapter < 1) {
+            enriched.targetChapter = 1;
+          }
+        }
+        // 确保 previousAnalyses 存在
+        if (!enriched.previousAnalyses) {
+          enriched.previousAnalyses = executionContext.previousAnalyses || [];
+        }
+        break;
+      
+      case 'save_chapter':
+        // 如果 chapterId 不存在，尝试从多个来源获取
+        if (!enriched.chapterId) {
+          // 1. 从执行上下文中获取
+          if (executionContext.targetChapter) {
+            enriched.chapterId = executionContext.targetChapter;
+          }
+          // 2. 从 filePath 中提取章节号
+          else if (enriched.filePath) {
+            const match = enriched.filePath.match(/第(\d+)章|chapter[_\s]?(\d+)|(\d+)\.(md|txt)/);
+            if (match) {
+              enriched.chapterId = parseInt(match[1] || match[2] || match[3]);
+            }
+          }
+          // 3. 从 scanResult 中获取
+          else if (executionContext.scanResult) {
+            if (executionContext.scanResult.latestChapter) {
+              enriched.chapterId = executionContext.scanResult.latestChapter + 1;
+            } else if (executionContext.scanResult.totalChapters > 0) {
+              enriched.chapterId = executionContext.scanResult.totalChapters + 1;
+            }
+          }
+        }
+        
+        // 确保 content 存在（从执行上下文中获取）
+        if (!enriched.content && executionContext.content) {
+          enriched.content = executionContext.content;
+        }
+        // 如果还是没有，尝试从 finalContent 获取
+        if (!enriched.content && executionContext.finalContent) {
+          enriched.content = executionContext.finalContent;
+        }
+        // 如果还是没有，尝试从 rewrittenContent 获取
+        if (!enriched.content && executionContext.rewrittenContent) {
+          enriched.content = executionContext.rewrittenContent;
+        }
+        break;
+      
+      case 'check_all':
+      case 'generate_rewrite_plan':
+      case 'rewrite_with_plan':
+        // 确保 content 存在（从执行上下文中获取）
+        if (!enriched.content) {
+          if (executionContext.content) {
+            enriched.content = executionContext.content;
+          } else if (executionContext.finalContent) {
+            enriched.content = executionContext.finalContent;
+          } else if (executionContext.rewrittenContent) {
+            enriched.content = executionContext.rewrittenContent;
+          }
+        }
+        
+        // 对于 generate_rewrite_plan，确保 checkResult 存在
+        if (skillName === 'generate_rewrite_plan' && !enriched.checkResult) {
+          enriched.checkResult = executionContext.checkResult || {};
+        }
+        
+        // 对于 rewrite_with_plan，确保 rewritePlan 存在
+        if (skillName === 'rewrite_with_plan' && !enriched.rewritePlan) {
+          enriched.rewritePlan = executionContext.rewritePlan || '';
+        }
+        break;
+    }
+    
+    return enriched;
+  }
+
+  /**
    * 更新执行上下文
    */
   updateExecutionContext(context, skillName, result) {
@@ -343,7 +469,12 @@ class AgentOrchestrator {
         break;
       
       case 'analyze_previous_chapters':
-        context.previousAnalyses = result.analyses || [];
+        // 安全地获取 analyses，如果 result 不存在或没有 analyses，使用空数组
+        if (result && result.analyses) {
+          context.previousAnalyses = result.analyses;
+        } else {
+          context.previousAnalyses = [];
+        }
         break;
       
       case 'load_chapter_content':
@@ -435,6 +566,101 @@ class AgentOrchestrator {
       return condition(context);
     }
     return true;
+  }
+
+  /**
+   * 清理对象以便 IPC 传输（移除不可序列化的内容）
+   */
+  sanitizeForIPC(obj) {
+    if (obj === null || obj === undefined) {
+      return obj;
+    }
+
+    if (typeof obj !== 'object') {
+      return obj;
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.sanitizeForIPC(item));
+    }
+
+    const sanitized = {};
+    for (const key in obj) {
+      if (!obj.hasOwnProperty(key)) continue;
+      
+      const value = obj[key];
+      
+      // 跳过函数
+      if (typeof value === 'function') {
+        continue;
+      }
+      
+      // 跳过循环引用（简单检测）
+      if (value === obj) {
+        continue;
+      }
+      
+      // 递归清理嵌套对象
+      if (typeof value === 'object' && value !== null) {
+        // 跳过特殊对象类型
+        if (value instanceof Error) {
+          sanitized[key] = { message: value.message, stack: value.stack };
+        } else if (value instanceof Date) {
+          sanitized[key] = value.toISOString();
+        } else if (value instanceof RegExp) {
+          sanitized[key] = value.toString();
+        } else {
+          sanitized[key] = this.sanitizeForIPC(value);
+        }
+      } else {
+        sanitized[key] = value;
+      }
+    }
+    
+    return sanitized;
+  }
+
+  /**
+   * 清理 Skill 结果以便 IPC 传输
+   */
+  sanitizeSkillResults(skillResults) {
+    if (!Array.isArray(skillResults)) {
+      return [];
+    }
+    
+    return skillResults.map(result => ({
+      skill: result.skill || result.skillName,
+      success: result.success,
+      error: result.error,
+      duration: result.duration,
+      result: this.sanitizeForIPC(result.result),
+      // 移除其他不可序列化的字段
+    }));
+  }
+
+  /**
+   * 清理待执行状态以便 IPC 传输
+   */
+  sanitizePendingExecution(pendingExecution) {
+    if (!pendingExecution) {
+      return null;
+    }
+    
+    return {
+      currentSkillIndex: pendingExecution.currentSkillIndex,
+      routeResult: {
+        intentType: pendingExecution.routeResult?.intentType,
+        skills: pendingExecution.routeResult?.skills?.map(skill => ({
+          name: skill.name,
+          input: this.sanitizeForIPC(skill.input),
+          condition: null // 条件通常是函数，不能序列化
+        })) || [],
+        pattern: pendingExecution.routeResult?.pattern || []
+      },
+      skillResults: this.sanitizeSkillResults(pendingExecution.skillResults || []),
+      executionContext: this.sanitizeForIPC(pendingExecution.executionContext)
+      // 移除 llmCaller（函数不能序列化）
+    };
   }
 
   /**
@@ -1649,7 +1875,7 @@ ${JSON.stringify({
         systemPrompt,
         userPrompt,
         temperature: 0.5, // 降低到 0.5，提高稳定性和准确性（从 0.7 降低）
-        maxTokens: 4096,
+        maxTokens: 2000,
         topP: 0.9 // 降低到 0.9，进一步控制输出质量（从 0.95 降低）
       });
 

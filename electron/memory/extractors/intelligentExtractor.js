@@ -217,7 +217,7 @@ ${content}
         ],
         {
           temperature: 0.3,
-          maxTokens: 4096
+          maxTokens: 2000
         }
       );
 

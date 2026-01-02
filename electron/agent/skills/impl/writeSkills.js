@@ -118,7 +118,7 @@ ${JSON.stringify({
         systemPrompt,
         userPrompt,
         temperature: 0.5,
-        maxTokens: 4096,
+        maxTokens: 2000,
         topP: 0.9
       });
 
