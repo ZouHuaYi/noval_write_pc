@@ -1402,7 +1402,7 @@ ${similarChunks.map((chunk, idx) =>
       const context = await currentMemory.loadContext(userRequest || '');
 
       // 使用 MemoryUpdater 更新记忆（现在写入 ChapterExtract）
-      const MemoryUpdater = require('./agent/memoryUpdater');
+      const MemoryUpdater = require('./agent/modules/context/memoryUpdater');
       const memoryUpdater = new MemoryUpdater(currentMemory, currentMemory.workspaceRoot);
       
       const result = await memoryUpdater.update(text, { userRequest }, context, llmCaller);
@@ -1519,7 +1519,7 @@ ${similarChunks.map((chunk, idx) =>
       };
 
       // 使用 IntelligentExtractor 分析章节
-      const IntelligentExtractor = require('./memory/intelligentExtractor');
+      const IntelligentExtractor = require('./memory/extractors/intelligentExtractor');
       const extractor = new IntelligentExtractor(
         currentMemory.workspaceRoot,
         currentMemory,

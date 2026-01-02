@@ -13,7 +13,113 @@ class CognitiveSkills {
   }
 
   /**
-   * plan_chapter - 规划章节
+   * plan_chapter_outline - 规划章节大纲（新版本，支持用户编辑）
+   */
+  async planChapterOutline(input, options = {}) {
+    const { chapterGoal, contextSummary, targetChapter, previousAnalyses = [], userModifiedOutline = null } = input;
+    
+    // 如果用户已经修改了大纲，直接返回（用于确认后继续）
+    if (userModifiedOutline) {
+      return {
+        outline: userModifiedOutline,
+        scenes: [],
+        requiresUserConfirmation: false
+      };
+    }
+    
+    if (!this.chapterPlanner) {
+      throw new Error('Chapter planner not available');
+    }
+
+    const llmCaller = options.llmCaller || this.llmCaller;
+    if (!llmCaller) {
+      throw new Error('LLM caller not available');
+    }
+
+    // 构建上下文
+    const context = {
+      world_rules: this.memory?.world?.getRules() || {},
+      characters: this.memory?.character?.getMainCharacters() || [],
+      plot_state: this.memory?.plot?.getCurrentState() || {}
+    };
+
+    // 构建用户请求
+    const userRequest = {
+      userRequest: chapterGoal
+    };
+
+    // 调用章节规划器
+    const plan = await this.chapterPlanner.planChapterForContinuation(
+      targetChapter,
+      previousAnalyses,
+      userRequest,
+      context,
+      llmCaller
+    );
+
+    if (!plan.success) {
+      throw new Error(`Chapter outline planning failed: ${plan.error}`);
+    }
+
+    // 转换为 Markdown 格式的大纲
+    const scenes = plan.chapter_structure?.scenes || [];
+    let outlineMarkdown = `# 第${targetChapter}章 章节大纲\n\n`;
+    outlineMarkdown += `## 章节目标\n${chapterGoal}\n\n`;
+    
+    if (plan.chapter_structure) {
+      outlineMarkdown += `## 章节结构\n`;
+      outlineMarkdown += `- 类型: ${plan.chapter_structure.type || '未指定'}\n`;
+      outlineMarkdown += `- 总场景数: ${plan.chapter_structure.total_scenes || scenes.length}\n\n`;
+    }
+
+    outlineMarkdown += `## 场景列表\n\n`;
+    scenes.forEach((scene, index) => {
+      outlineMarkdown += `### 场景 ${index + 1}: ${scene.id || `场景${index + 1}`}\n`;
+      outlineMarkdown += `- **类型**: ${scene.type || '未指定'}\n`;
+      outlineMarkdown += `- **目的**: ${scene.purpose || '未指定'}\n`;
+      outlineMarkdown += `- **节奏**: ${scene.pacing || '未指定'}\n`;
+      outlineMarkdown += `- **情绪**: ${scene.emotion || '未指定'}\n`;
+      outlineMarkdown += `- **密度**: ${scene.density || '未指定'}\n`;
+      outlineMarkdown += `- **预计字数**: ${scene.word_count || 0}\n\n`;
+    });
+
+    if (plan.emotion_curve) {
+      outlineMarkdown += `## 情绪曲线\n`;
+      outlineMarkdown += `- 起始: ${plan.emotion_curve.start || 0}\n`;
+      outlineMarkdown += `- 峰值: ${plan.emotion_curve.peak || 0}\n`;
+      outlineMarkdown += `- 结束: ${plan.emotion_curve.end || 0}\n\n`;
+    }
+
+    if (plan.coherence_links) {
+      outlineMarkdown += `## 连贯性连接\n`;
+      if (plan.coherence_links.previous_chapter) {
+        outlineMarkdown += `### 与前章连接\n`;
+        plan.coherence_links.previous_chapter.connection_points?.forEach(point => {
+          outlineMarkdown += `- ${point}\n`;
+        });
+      }
+      if (plan.coherence_links.next_chapter) {
+        outlineMarkdown += `### 为下章铺垫\n`;
+        plan.coherence_links.next_chapter.setup_points?.forEach(point => {
+          outlineMarkdown += `- ${point}\n`;
+        });
+      }
+    }
+
+    return {
+      outline: outlineMarkdown,
+      scenes: scenes.map(scene => ({
+        title: scene.id || '未命名场景',
+        description: scene.purpose || '',
+        purpose: scene.purpose || '',
+        estimatedLength: scene.word_count || 0
+      })),
+      requiresUserConfirmation: true
+    };
+  }
+
+  /**
+   * plan_chapter - 规划章节（旧版本，已废弃）
    * 禁止输出正文，只做"导演分镜"
    */
   async planChapter(input, options = {}) {
@@ -138,6 +244,119 @@ ${content.substring(0, 2000)}${content.length > 2000 ? '...' : ''}
       return {
         issues: ['反思过程出错'],
         suggestions: ['请手动检查文本']
+      };
+    }
+  }
+
+  /**
+   * generate_rewrite_plan - 生成整改方案
+   */
+  async generateRewritePlan(input, options = {}) {
+    const { content, checkResult, context = {} } = input;
+    
+    if (!content) {
+      throw new Error('Content is required for rewrite plan generation');
+    }
+
+    if (!checkResult) {
+      throw new Error('Check result is required for rewrite plan generation');
+    }
+
+    const llmCaller = options.llmCaller || this.llmCaller;
+    if (!llmCaller) {
+      // 如果没有 LLM，生成简单的整改方案
+      const issues = [];
+      if (checkResult.characterIssues && checkResult.characterIssues.length > 0) {
+        issues.push(...checkResult.characterIssues.map(issue => `角色问题: ${issue.issue}`));
+      }
+      if (checkResult.worldRuleIssues && checkResult.worldRuleIssues.length > 0) {
+        issues.push(...checkResult.worldRuleIssues.map(issue => `世界观问题: ${issue}`));
+      }
+      if (checkResult.coherenceIssues && checkResult.coherenceIssues.length > 0) {
+        issues.push(...checkResult.coherenceIssues.map(issue => `连贯性问题: ${issue}`));
+      }
+
+      return {
+        rewritePlan: issues.length > 0 
+          ? `需要修改以下问题：\n${issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n')}`
+          : '内容检查通过，无需修改',
+        priority: checkResult.overallStatus === 'fail' ? 'high' : 'low',
+        estimatedChanges: issues.map((issue, i) => ({
+          section: '全文',
+          issue: issue,
+          suggestion: '请根据问题描述进行相应修改'
+        }))
+      };
+    }
+
+    // 构建整改方案生成提示词
+    const systemPrompt = `你是一个小说质量改进专家。根据检查结果，生成详细的整改方案。
+
+输出格式（JSON）：
+{
+  "rewritePlan": "详细的整改方案说明",
+  "priority": "high" | "medium" | "low",
+  "estimatedChanges": [
+    {
+      "section": "需要修改的段落描述",
+      "issue": "问题描述",
+      "suggestion": "修改建议"
+    }
+  ]
+}`;
+
+    const userPrompt = `# 原始内容
+${content.substring(0, 3000)}${content.length > 3000 ? '...' : ''}
+
+# 检查结果
+${JSON.stringify(checkResult, null, 2)}
+
+请生成详细的整改方案，包括：
+1. 需要修改的具体位置
+2. 每个问题的修改建议
+3. 修改的优先级
+
+返回 JSON 格式的整改方案。`;
+
+    try {
+      const result = await llmCaller({
+        systemPrompt,
+        userPrompt,
+        temperature: 0.3,
+        maxTokens: 2000
+      });
+
+      // 解析结果
+      let parsed;
+      if (typeof result === 'string') {
+        parsed = JSON.parse(result);
+      } else if (result.success && result.response) {
+        parsed = JSON.parse(result.response);
+      } else {
+        throw new Error('Invalid LLM response');
+      }
+
+      return {
+        rewritePlan: parsed.rewritePlan || '需要根据检查结果进行修改',
+        priority: parsed.priority || (checkResult.overallStatus === 'fail' ? 'high' : 'low'),
+        estimatedChanges: parsed.estimatedChanges || []
+      };
+    } catch (error) {
+      console.error('生成整改方案失败:', error);
+      // 返回基础整改方案
+      const issues = [];
+      if (checkResult.characterIssues) issues.push(...checkResult.characterIssues);
+      if (checkResult.worldRuleIssues) issues.push(...checkResult.worldRuleIssues);
+      if (checkResult.coherenceIssues) issues.push(...checkResult.coherenceIssues);
+
+      return {
+        rewritePlan: `需要修改以下问题：\n${issues.map((issue, i) => `${i + 1}. ${typeof issue === 'string' ? issue : issue.issue || issue.message || JSON.stringify(issue)}`).join('\n')}`,
+        priority: checkResult.overallStatus === 'fail' ? 'high' : 'low',
+        estimatedChanges: issues.map((issue, i) => ({
+          section: '全文',
+          issue: typeof issue === 'string' ? issue : issue.issue || issue.message || JSON.stringify(issue),
+          suggestion: '请根据问题描述进行相应修改'
+        }))
       };
     }
   }

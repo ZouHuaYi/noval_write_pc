@@ -5,8 +5,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { callLLM } = require('../llm');
-const { safeParseJSON } = require('../utils/jsonParser');
+const { callLLM } = require('../../core/llm');
+const { safeParseJSON } = require('../../utils/jsonParser');
 const ExtractWriter = require('./extractWriter');
 const FileStateManager = require('../managers/fileStateManager');
 

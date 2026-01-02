@@ -141,6 +141,77 @@
       "note": "此 skill 禁止输出正文，只做导演分镜"
     },
     {
+      "name": "plan_chapter_outline",
+      "category": "cognitive",
+      "description": "规划章节大纲，输出可编辑的大纲供用户确认",
+      "inputSchema": {
+        "type": "object",
+        "required": ["chapterGoal", "contextSummary"],
+        "properties": {
+          "chapterGoal": {
+            "type": "string",
+            "description": "章节目标"
+          },
+          "contextSummary": {
+            "type": "string",
+            "description": "上下文摘要"
+          },
+          "targetChapter": {
+            "type": "number",
+            "description": "目标章节号"
+          },
+          "previousAnalyses": {
+            "type": "array",
+            "description": "前章分析结果"
+          },
+          "userModifiedOutline": {
+            "type": "string",
+            "description": "用户修改后的大纲（可选，用于确认后继续）"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "outline": {
+            "type": "string",
+            "description": "章节大纲（Markdown 格式）"
+          },
+          "scenes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "场景标题"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "场景描述"
+                },
+                "purpose": {
+                  "type": "string",
+                  "description": "场景目的"
+                },
+                "estimatedLength": {
+                  "type": "number",
+                  "description": "预计字数"
+                }
+              }
+            }
+          },
+          "requiresUserConfirmation": {
+            "type": "boolean",
+            "description": "是否需要用户确认",
+            "default": true
+          }
+        }
+      },
+      "sideEffects": [],
+      "requiresUserInteraction": true
+    },
+    {
       "name": "reflect_previous_output",
       "category": "cognitive",
       "description": "对上一轮生成内容进行自检与反思",
@@ -341,6 +412,193 @@
             "items": {
               "type": "string",
               "description": "违反的规则描述"
+            }
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "check_all",
+      "category": "check",
+      "description": "整合所有检查（一致性、世界观、连贯性），输出综合检查结果",
+      "inputSchema": {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "待检查的内容"
+          },
+          "characters": {
+            "type": "array",
+            "description": "角色设定列表"
+          },
+          "worldRules": {
+            "type": "object",
+            "description": "世界观规则"
+          },
+          "context": {
+            "type": "object",
+            "description": "上下文信息"
+          },
+          "previousAnalyses": {
+            "type": "array",
+            "description": "前章分析结果"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "overallStatus": {
+            "type": "string",
+            "enum": ["pass", "fail", "warning"],
+            "description": "整体状态"
+          },
+          "characterIssues": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "character": {
+                  "type": "string"
+                },
+                "issue": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": ["error", "warning"]
+                }
+              }
+            }
+          },
+          "worldRuleIssues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "coherenceIssues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string",
+            "description": "检查结果摘要"
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "generate_rewrite_plan",
+      "category": "cognitive",
+      "description": "基于检查结果生成整改方案",
+      "inputSchema": {
+        "type": "object",
+        "required": ["content", "checkResult"],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "原始内容"
+          },
+          "checkResult": {
+            "type": "object",
+            "description": "检查结果"
+          },
+          "context": {
+            "type": "object",
+            "description": "上下文信息"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "rewritePlan": {
+            "type": "string",
+            "description": "整改方案（详细说明需要修改的地方和修改方式）"
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["high", "medium", "low"],
+            "description": "优先级"
+          },
+          "estimatedChanges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "section": {
+                  "type": "string",
+                  "description": "需要修改的段落"
+                },
+                "issue": {
+                  "type": "string",
+                  "description": "问题描述"
+                },
+                "suggestion": {
+                  "type": "string",
+                  "description": "修改建议"
+                }
+              }
+            }
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "rewrite_with_plan",
+      "category": "write",
+      "description": "根据整改方案重写内容",
+      "inputSchema": {
+        "type": "object",
+        "required": ["content", "rewritePlan"],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "原始内容"
+          },
+          "rewritePlan": {
+            "type": "string",
+            "description": "整改方案"
+          },
+          "context": {
+            "type": "object",
+            "description": "上下文信息"
+          },
+          "intent": {
+            "type": "object",
+            "description": "写作意图"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "rewrittenContent": {
+            "type": "string",
+            "description": "重写后的内容"
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "description": "变更类型"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "变更描述"
+                }
+              }
             }
           }
         }

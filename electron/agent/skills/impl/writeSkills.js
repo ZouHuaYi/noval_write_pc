@@ -200,6 +200,104 @@ ${JSON.stringify({
       explanation: result.explanation || '重写完成'
     };
   }
+
+  /**
+   * rewrite_with_plan - 根据整改方案重写内容
+   */
+  async rewriteWithPlan(input, options = {}) {
+    const { content, rewritePlan, context = {}, intent = {} } = input;
+    
+    if (!content) {
+      throw new Error('Content is required for rewrite');
+    }
+
+    if (!rewritePlan) {
+      throw new Error('Rewrite plan is required');
+    }
+
+    const llmCaller = options.llmCaller || this.llmCaller;
+    if (!llmCaller) {
+      throw new Error('LLM caller not available');
+    }
+
+    // 构建系统提示词
+    const systemPrompt = `你是一个专业的小说修改助手。根据整改方案，对给定的文本进行修改。
+
+# 核心任务
+根据整改方案，修改文本中的问题，确保：
+1. 修正所有检查发现的问题
+2. 保持文本的流畅性和连贯性
+3. 不改变文本的核心内容和意图
+4. 保持原有的写作风格
+
+# 输出要求
+1. **直接输出修改后的文本**，不要添加任何标记、说明或注释
+2. 保持章节标题格式（如果有）
+3. 保持段落结构清晰
+4. 确保修改后的文本符合所有要求`;
+
+    // 构建用户提示词
+    let userPrompt = `# 原始文本
+
+${content}
+
+# 整改方案
+
+${rewritePlan}
+
+# 上下文信息（供参考）
+
+${JSON.stringify({
+  world_rules: context.worldRules || {},
+  characters: context.characters || [],
+  plot_context: context.plotState || {}
+}, null, 2)}
+
+请根据整改方案修改原始文本。直接输出修改后的完整文本，不要添加任何说明。`;
+
+    try {
+      const result = await llmCaller({
+        systemPrompt,
+        userPrompt,
+        temperature: 0.3,
+        maxTokens: 4000
+      });
+
+      // 提取文本内容
+      let rewrittenContent = '';
+      if (typeof result === 'string') {
+        rewrittenContent = result;
+      } else if (result.success && result.response) {
+        rewrittenContent = result.response;
+      } else {
+        throw new Error('Invalid LLM response');
+      }
+
+      // 清理文本（移除可能的标记）
+      rewrittenContent = rewrittenContent
+        .replace(/```markdown\n?/g, '')
+        .replace(/```\n?/g, '')
+        .replace(/^第\d+章\s*/m, '')
+        .trim();
+
+      // 如果原始内容有章节标题，保留它
+      const chapterTitleMatch = content.match(/^第\d+章[^\n]*/);
+      if (chapterTitleMatch && !rewrittenContent.startsWith('第')) {
+        rewrittenContent = chapterTitleMatch[0] + '\n\n' + rewrittenContent;
+      }
+
+      return {
+        rewrittenContent,
+        changes: [{
+          type: 'rewrite',
+          description: '根据整改方案进行了全面修改'
+        }]
+      };
+    } catch (error) {
+      console.error('重写失败:', error);
+      throw new Error(`Rewrite failed: ${error.message}`);
+    }
+  }
 }
 
 module.exports = WriteSkills;

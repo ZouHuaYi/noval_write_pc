@@ -96,6 +96,8 @@ const AgentStates = {
   CHECK_CONSISTENCY: 'check_consistency',
   REWRITE: 'rewrite',
   UPDATE_MEMORY: 'update_memory',
+  WAITING_USER_CONFIRMATION: 'waiting_user_confirmation',
+  FINALIZING: 'finalizing',
   DONE: 'done',
   ERROR: 'error'
 };

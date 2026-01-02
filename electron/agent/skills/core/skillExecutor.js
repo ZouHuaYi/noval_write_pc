@@ -4,11 +4,11 @@
  */
 
 const skillDefinitions = require('../definitions/skillDefinitions.json');
-const ContextSkills = require('./impl/contextSkills');
-const CognitiveSkills = require('./impl/cognitiveSkills');
-const WriteSkills = require('./impl/writeSkills');
-const CheckSkills = require('./impl/checkSkills');
-const ActionSkills = require('./impl/actionSkills');
+const ContextSkills = require('../impl/contextSkills');
+const CognitiveSkills = require('../impl/cognitiveSkills');
+const WriteSkills = require('../impl/writeSkills');
+const CheckSkills = require('../impl/checkSkills');
+const ActionSkills = require('../impl/actionSkills');
 const logger = require('../../../utils/logger');
 
 class SkillExecutor {
@@ -43,18 +43,22 @@ class SkillExecutor {
     
     // Cognitive Skills
     this.skillMap.set('plan_chapter', this.cognitiveSkills.planChapter.bind(this.cognitiveSkills));
+    this.skillMap.set('plan_chapter_outline', this.cognitiveSkills.planChapterOutline.bind(this.cognitiveSkills));
     this.skillMap.set('reflect_previous_output', this.cognitiveSkills.reflectPreviousOutput.bind(this.cognitiveSkills));
     this.skillMap.set('plan_intent', this.cognitiveSkills.planIntent.bind(this.cognitiveSkills));
     this.skillMap.set('analyze_curves', this.cognitiveSkills.analyzeCurves.bind(this.cognitiveSkills));
+    this.skillMap.set('generate_rewrite_plan', this.cognitiveSkills.generateRewritePlan.bind(this.cognitiveSkills));
     
     // Write Skills
     this.skillMap.set('write_chapter', this.writeSkills.writeChapter.bind(this.writeSkills));
     this.skillMap.set('rewrite_selected_text', this.writeSkills.rewriteSelectedText.bind(this.writeSkills));
+    this.skillMap.set('rewrite_with_plan', this.writeSkills.rewriteWithPlan.bind(this.writeSkills));
     
     // Check Skills
     this.skillMap.set('check_character_consistency', this.checkSkills.checkCharacterConsistency.bind(this.checkSkills));
     this.skillMap.set('check_world_rule_violation', this.checkSkills.checkWorldRuleViolation.bind(this.checkSkills));
     this.skillMap.set('check_coherence', this.checkSkills.checkCoherence.bind(this.checkSkills));
+    this.skillMap.set('check_all', this.checkSkills.checkAll.bind(this.checkSkills));
     
     // Action Skills
     this.skillMap.set('save_chapter', this.actionSkills.saveChapter.bind(this.actionSkills));

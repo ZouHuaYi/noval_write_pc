@@ -292,6 +292,120 @@ ${content.substring(0, 2000)}${content.length > 2000 ? '...' : ''}
       };
     }
   }
+
+  /**
+   * check_all - 整合所有检查
+   */
+  async checkAll(input, options = {}) {
+    const { content, characters = [], worldRules = {}, context = {}, previousAnalyses = [] } = input;
+    
+    if (!content) {
+      throw new Error('Content is required for check');
+    }
+
+    const llmCaller = options.llmCaller || this.llmCaller;
+    
+    // 获取角色列表
+    const characterList = characters.length > 0 
+      ? characters 
+      : (this.memory?.character?.getMainCharacters() || []);
+
+    // 获取世界观规则
+    const rules = Object.keys(worldRules).length > 0
+      ? worldRules
+      : (this.memory?.world?.getRules() || {});
+
+    // 并行执行所有检查
+    const checkPromises = [];
+
+    // 1. 角色一致性检查
+    if (characterList.length > 0) {
+      checkPromises.push(
+        this.checkCharacterConsistency(
+          { content, characters: characterList, context },
+          options
+        ).catch(err => {
+          console.error('角色一致性检查失败:', err);
+          return { violations: [] };
+        })
+      );
+    } else {
+      checkPromises.push(Promise.resolve({ violations: [] }));
+    }
+
+    // 2. 世界观规则检查
+    if (Object.keys(rules).length > 0) {
+      checkPromises.push(
+        this.checkWorldRuleViolation(
+          { content, worldRules: rules, context },
+          options
+        ).catch(err => {
+          console.error('世界观规则检查失败:', err);
+          return { violations: [] };
+        })
+      );
+    } else {
+      checkPromises.push(Promise.resolve({ violations: [] }));
+    }
+
+    // 3. 连贯性检查（如果有连贯性检查器）
+    if (this.dependencies?.coherenceChecker) {
+      checkPromises.push(
+        this.dependencies.coherenceChecker.check(
+          content,
+          previousAnalyses,
+          context,
+          llmCaller
+        ).then(result => ({
+          coherenceIssues: result.errors || [],
+          coherenceScore: result.overall_score || 100
+        })).catch(err => {
+          console.error('连贯性检查失败:', err);
+          return { coherenceIssues: [], coherenceScore: 100 };
+        })
+      );
+    } else {
+      checkPromises.push(Promise.resolve({ coherenceIssues: [], coherenceScore: 100 }));
+    }
+
+    // 等待所有检查完成
+    const [characterResult, worldRuleResult, coherenceResult] = await Promise.all(checkPromises);
+
+    // 汇总结果
+    const characterIssues = (characterResult.violations || []).map(v => ({
+      character: v.character || '未知',
+      issue: v.issue || v.message || JSON.stringify(v),
+      severity: v.severity === 'error' || v.severity === 'high' ? 'error' : 'warning'
+    }));
+
+    const worldRuleIssues = worldRuleResult.violations || [];
+    const coherenceIssues = coherenceResult.coherenceIssues || [];
+
+    // 判断整体状态
+    const hasErrors = characterIssues.some(issue => issue.severity === 'error') || 
+                      worldRuleIssues.length > 0 ||
+                      coherenceResult.coherenceScore < 60;
+    const hasWarnings = characterIssues.some(issue => issue.severity === 'warning') ||
+                        coherenceResult.coherenceScore < 80;
+
+    const overallStatus = hasErrors ? 'fail' : (hasWarnings ? 'warning' : 'pass');
+
+    // 生成摘要
+    const summary = `检查完成：${overallStatus === 'pass' ? '通过' : overallStatus === 'warning' ? '有警告' : '发现问题'}
+- 角色问题: ${characterIssues.length} 个
+- 世界观问题: ${worldRuleIssues.length} 个
+- 连贯性问题: ${coherenceIssues.length} 个
+- 连贯性得分: ${coherenceResult.coherenceScore || 100}`;
+
+    return {
+      overallStatus,
+      characterIssues,
+      worldRuleIssues,
+      coherenceIssues,
+      summary,
+      coherenceScore: coherenceResult.coherenceScore || 100
+    };
+  }
 }
 
 module.exports = CheckSkills;

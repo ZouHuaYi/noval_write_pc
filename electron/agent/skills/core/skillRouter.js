@@ -17,20 +17,20 @@ class SkillRouter {
    */
   buildExecutionPatterns() {
     return {
-      // 续写/创建章节的标准流程（完整版）
+      // 续写/创建章节的新流程（重构版）
       CONTINUE_OR_CREATE: [
         'load_story_context',
         'scan_chapters',
         'analyze_previous_chapters',
-        'plan_chapter',
+        'plan_chapter_outline',  // 新：大纲规划（需要用户确认）
+        // 用户确认后继续
         'plan_intent',
         'write_chapter',
-        'check_coherence',
-        'analyze_curves',
-        'check_character_consistency',
-        'check_world_rule_violation',
-        'finalize_chapter',
+        'check_all',  // 新：整合所有检查
+        'generate_rewrite_plan',  // 新：生成整改方案
+        'rewrite_with_plan',  // 新：根据整改方案重写
         'save_chapter'
+        // 注意：finalize_chapter 和 update_memory 在用户确认应用后执行
       ],
       
       // 重写章节的流程（支持重写循环）

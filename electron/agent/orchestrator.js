@@ -218,7 +218,19 @@ class AgentOrchestrator {
         userRequest: request.userRequest
       };
 
-      for (const skillPlan of routeResult.skills) {
+      // 保存当前执行状态（用于分阶段执行）
+      this.pendingExecution = {
+        routeResult,
+        skillResults: [],
+        executionContext,
+        currentSkillIndex: 0,
+        llmCaller
+      };
+
+      for (let i = 0; i < routeResult.skills.length; i++) {
+        const skillPlan = routeResult.skills[i];
+        this.pendingExecution.currentSkillIndex = i;
+        
         this.addStep(`execute_${skillPlan.name}`, `执行 ${skillPlan.name}`);
         
         // 检查条件（如果有）
@@ -234,6 +246,7 @@ class AgentOrchestrator {
         );
 
         skillResults.push(result);
+        this.pendingExecution.skillResults = skillResults;
 
         // 如果 Skill 失败且是关键步骤，中断执行
         if (!result.success && this.isCriticalSkill(skillPlan.name)) {
@@ -243,74 +256,26 @@ class AgentOrchestrator {
         // 更新执行上下文（将 Skill 结果传递给下一个 Skill）
         this.updateExecutionContext(executionContext, skillPlan.name, result.result);
 
-        // 特殊处理：重写循环（如果检查失败，需要重写）
-        // 注意：只在最后一个检查 Skill 后判断，避免重复触发
-        if ((skillPlan.name === 'check_world_rule_violation') && executionContext.content) {
-          const checkResult = this.aggregateCheckResults(skillResults);
-          if (checkResult && checkResult.status === 'fail') {
-            // 检查是否需要重写
-            const maxRewrites = 2;
-            const rewriteCount = executionContext.rewriteCount || 0;
-            
-            if (rewriteCount < maxRewrites) {
-              this.log('检查失败，进入重写循环', { rewriteCount: rewriteCount + 1 });
-              this.addStep('rewrite_loop', `重写循环 (${rewriteCount + 1}/${maxRewrites})`);
-              
-              // 插入重写 Skill
-              const rewriteResult = await this.skillExecutor.execute(
-                'rewrite_selected_text',
-                {
-                  text: executionContext.content,
-                  rewriteGoal: '修正检查发现的错误',
-                  context: executionContext,
-                  intent: executionContext.intent
-                },
-                { llmCaller, context: executionContext }
-              );
-              
-              if (rewriteResult.success) {
-                skillResults.push(rewriteResult);
-                executionContext.content = rewriteResult.result?.rewrittenText || executionContext.content;
-                executionContext.rewriteCount = rewriteCount + 1;
-                
-                // 重新执行检查（插入到当前 Skill 之后）
-                this.log('重新执行检查', { rewriteCount: rewriteCount + 1 });
-                
-                // 重新执行两个检查 Skill
-                const recheckResults = await Promise.all([
-                  this.skillExecutor.execute(
-                    'check_character_consistency',
-                    {
-                      content: executionContext.content,
-                      characters: executionContext.characters || [],
-                      context: executionContext
-                    },
-                    { llmCaller, context: executionContext }
-                  ),
-                  this.skillExecutor.execute(
-                    'check_world_rule_violation',
-                    {
-                      content: executionContext.content,
-                      worldRules: executionContext.worldRules || {},
-                      context: executionContext
-                    },
-                    { llmCaller, context: executionContext }
-                  )
-                ]);
-                
-                skillResults.push(...recheckResults);
-                
-                // 更新检查结果
-                const newCheckResult = this.aggregateCheckResults(recheckResults);
-                if (newCheckResult) {
-                  executionContext.checkResult = newCheckResult;
-                }
-              }
-            } else {
-              this.log('已达到最大重写次数，停止重写循环', { maxRewrites });
-            }
-          }
+        // 特殊处理：plan_chapter_outline 需要用户确认
+        if (skillPlan.name === 'plan_chapter_outline' && result.result?.requiresUserConfirmation) {
+          this.log('等待用户确认大纲', { outline: result.result.outline });
+          this.setState(AgentStates.WAITING_USER_CONFIRMATION);
+          
+          // 返回中间结果，等待用户确认
+          return {
+            success: true,
+            requiresUserConfirmation: true,
+            confirmationType: 'outline',
+            outline: result.result.outline,
+            scenes: result.result.scenes,
+            executionContext,
+            skillResults,
+            pendingExecution: this.pendingExecution
+          };
         }
+
+        // 新流程：check_all -> generate_rewrite_plan -> rewrite_with_plan
+        // 旧的重写循环逻辑已移除，由新流程统一处理
       }
 
       // 步骤 3: 汇总结果
@@ -391,6 +356,12 @@ class AgentOrchestrator {
         context.chapterPlan = result;
         break;
       
+      case 'plan_chapter_outline':
+        context.outline = result.outline;
+        context.scenes = result.scenes;
+        context.chapterPlan = result;
+        break;
+      
       case 'plan_intent':
         context.intent = result;
         context.constraints = result.constraints;
@@ -398,8 +369,26 @@ class AgentOrchestrator {
         break;
       
       case 'write_chapter':
+        context.content = result.content;
+        break;
+      
       case 'rewrite_selected_text':
-        context.content = result.content || result.rewrittenText;
+        context.content = result.rewrittenText;
+        break;
+      
+      case 'rewrite_with_plan':
+        context.content = result.rewrittenContent;
+        context.rewriteChanges = result.changes;
+        break;
+      
+      case 'check_all':
+        context.checkResult = result;
+        break;
+      
+      case 'generate_rewrite_plan':
+        context.rewritePlan = result.rewritePlan;
+        context.rewritePriority = result.priority;
+        context.estimatedChanges = result.estimatedChanges;
         break;
       
       case 'check_coherence':
@@ -424,6 +413,8 @@ class AgentOrchestrator {
           context.checkResult.errors.push(...result.violations);
         }
         break;
+      
+      // 注意：check_all 已在上面处理
       
       case 'update_memory':
         context.memoryUpdated = result.success;
@@ -598,7 +589,7 @@ class AgentOrchestrator {
       // 使用错误处理包装执行
       return await ErrorHandler.withRetry(
         async () => {
-          return await this.executeInternal(request, llmCaller, startTime);
+          return await this._executeLegacyInternal(request, llmCaller, startTime);
         },
         {
           maxRetries: 2,
@@ -636,7 +627,8 @@ class AgentOrchestrator {
       throw new Error('Agent 未初始化，请先调用 initialize()');
     }
 
-    const startTime = Date.now();
+    // 如果没有传入 startTime，使用当前时间
+    const actualStartTime = startTime || Date.now();
     this.statistics.totalTasks++;
 
     this.currentTask = {
@@ -653,7 +645,7 @@ class AgentOrchestrator {
       // 使用错误处理包装执行
       return await ErrorHandler.withRetry(
         async () => {
-          return await this.executeInternal(request, llmCaller, startTime);
+          return await this._executeLegacyInternal(request, llmCaller, actualStartTime);
         },
         {
           maxRetries: 2,
@@ -665,7 +657,7 @@ class AgentOrchestrator {
         }
       );
     } catch (error) {
-      const executionTime = Date.now() - startTime;
+      const executionTime = Date.now() - actualStartTime;
       this.statistics.failedTasks++;
       this.updateStatistics(executionTime);
 
@@ -688,8 +680,9 @@ class AgentOrchestrator {
    * @deprecated 此方法已废弃，请使用 executeWithSkills 方法（Skill 架构）
    * 保留此方法仅用于向后兼容
    * 新流程：先分析意图，然后根据意图执行不同的流程
+   * @private
    */
-  async executeInternal(request, llmCaller, startTime) {
+  async _executeLegacyInternal(request, llmCaller, startTime) {
       // ========== 阶段 0: 分析用户意图（新增） ==========
       this.setState(AgentStates.LOAD_CONTEXT);
       this.addStep('analyze_intent', '分析用户意图');

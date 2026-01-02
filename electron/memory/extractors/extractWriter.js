@@ -5,7 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const ExtractCleaner = require('./finalizer/extractCleaner');
+const ExtractCleaner = require('../finalizer/extractCleaner');
 
 class ExtractWriter {
   constructor(workspaceRoot) {
