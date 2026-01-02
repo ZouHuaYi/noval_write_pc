@@ -2035,6 +2035,38 @@ ${similarChunks.map((chunk, idx) =>
     }
   });
 
+  // 继续执行（用户确认大纲后）
+  ipcMain.handle('novelAgent:continueExecution', async (event, options) => {
+    try {
+      if (!currentAgent || !currentAgent.initialized) {
+        return { success: false, error: 'Agent 未初始化，请先初始化' };
+      }
+
+      const llmCaller = createLLMCaller();
+      const result = await currentAgent.continueExecution(options, llmCaller);
+      
+      return result;
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 应用更改并更新记忆
+  ipcMain.handle('novelAgent:applyChangesAndUpdateMemory', async (event, options) => {
+    try {
+      if (!currentAgent || !currentAgent.initialized) {
+        return { success: false, error: 'Agent 未初始化，请先初始化' };
+      }
+
+      const llmCaller = createLLMCaller();
+      const result = await currentAgent.applyChangesAndUpdateMemory(options, llmCaller);
+      
+      return result;
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // ==================== 规则管理 IPC ====================
 
   // 获取所有规则

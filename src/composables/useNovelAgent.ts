@@ -35,6 +35,15 @@ interface AgentResult {
   report?: any;
   executionLog?: any[];
   error?: string;
+  // 新增字段
+  requiresUserConfirmation?: boolean;
+  confirmationType?: 'outline';
+  outline?: string;
+  scenes?: any[];
+  rewritePlan?: string;
+  executionContext?: any;
+  skillResults?: any[];
+  pendingExecution?: any;
 }
 
 interface AgentTask {
@@ -221,6 +230,81 @@ export function useNovelAgent() {
     }
   };
 
+  // 继续执行（用户确认大纲后）
+  const continueExecution = async (options: { userModifiedOutline?: string } = {}) => {
+    if (!window.api?.novelAgent) {
+      error.value = 'Novel Agent API 不可用';
+      return { success: false, error: error.value };
+    }
+
+    if (!initialized.value) {
+      error.value = 'Agent 未初始化';
+      return { success: false, error: error.value };
+    }
+
+    isExecuting.value = true;
+    error.value = '';
+
+    try {
+      const result = await window.api.novelAgent.continueExecution(options);
+      
+      if (result.success) {
+        lastResult.value = result;
+        agentState.value = 'done';
+        
+        // 获取最新的任务信息
+        await getCurrentTask();
+        await getLog(10);
+      } else {
+        error.value = result.error || '继续执行失败';
+        agentState.value = 'error';
+      }
+
+      return result;
+    } catch (err: any) {
+      error.value = err.message || '继续执行失败';
+      agentState.value = 'error';
+      return { success: false, error: error.value };
+    } finally {
+      isExecuting.value = false;
+    }
+  };
+
+  // 应用更改并更新记忆
+  const applyChangesAndUpdateMemory = async (options: { content: string; chapterNumber: number }) => {
+    if (!window.api?.novelAgent) {
+      error.value = 'Novel Agent API 不可用';
+      return { success: false, error: error.value };
+    }
+
+    if (!initialized.value) {
+      error.value = 'Agent 未初始化';
+      return { success: false, error: error.value };
+    }
+
+    isExecuting.value = true;
+    error.value = '';
+
+    try {
+      const result = await window.api.novelAgent.applyChangesAndUpdateMemory(options);
+      
+      if (result.success) {
+        agentState.value = 'done';
+      } else {
+        error.value = result.error || '应用更改失败';
+        agentState.value = 'error';
+      }
+
+      return result;
+    } catch (err: any) {
+      error.value = err.message || '应用更改失败';
+      agentState.value = 'error';
+      return { success: false, error: error.value };
+    } finally {
+      isExecuting.value = false;
+    }
+  };
+
   // Computed
   const canExecute = computed(() => initialized.value && !isExecuting.value);
   const stateDisplay = computed(() => {
@@ -322,7 +406,9 @@ export function useNovelAgent() {
     getState,
     getLog,
     cancelTask,
-    getCurrentTask
+    getCurrentTask,
+    continueExecution,
+    applyChangesAndUpdateMemory
   };
 }
 

@@ -325,6 +325,164 @@ class AgentOrchestrator {
   }
 
   /**
+   * 继续执行（用户确认大纲后）
+   * @param {Object} options - 选项
+   * @param {string} options.userModifiedOutline - 用户修改后的大纲（可选）
+   * @param {Function} llmCaller - LLM 调用函数
+   */
+  async continueExecution(options = {}, llmCaller) {
+    if (!this.pendingExecution) {
+      throw new Error('没有待执行的流程');
+    }
+
+    const { userModifiedOutline } = options;
+    const { routeResult, skillResults, executionContext, currentSkillIndex } = this.pendingExecution;
+
+    // 如果用户修改了大纲，更新执行上下文
+    if (userModifiedOutline) {
+      executionContext.userModifiedOutline = userModifiedOutline;
+    }
+
+    // 从上次中断的地方继续执行
+    const startTime = Date.now();
+    this.setState(AgentStates.PLAN_INTENT);
+
+    try {
+      for (let i = currentSkillIndex + 1; i < routeResult.skills.length; i++) {
+        const skillPlan = routeResult.skills[i];
+        this.pendingExecution.currentSkillIndex = i;
+        
+        this.addStep(`execute_${skillPlan.name}`, `执行 ${skillPlan.name}`);
+
+        // 检查条件
+        if (skillPlan.condition && !this.evaluateCondition(skillPlan.condition, executionContext)) {
+          this.log(`跳过 Skill: ${skillPlan.name} (条件不满足)`);
+          continue;
+        }
+
+        // 动态补充输入参数
+        const finalInput = this.enrichSkillInput(skillPlan.name, skillPlan.input, executionContext);
+
+        const result = await this.skillExecutor.execute(
+          skillPlan.name,
+          finalInput,
+          { llmCaller, context: executionContext }
+        );
+
+        skillResults.push(result);
+        this.pendingExecution.skillResults = skillResults;
+
+        // 如果 Skill 失败且是关键步骤，中断执行
+        if (!result.success && this.isCriticalSkill(skillPlan.name)) {
+          throw new Error(`关键 Skill 执行失败: ${skillPlan.name} - ${result.error}`);
+        }
+
+        // 更新执行上下文
+        if (result.success && result.result) {
+          this.updateExecutionContext(executionContext, skillPlan.name, result.result);
+        }
+      }
+
+      // 汇总结果
+      const finalResult = this.aggregateSkillResults(skillResults, routeResult);
+
+      const executionTime = Date.now() - startTime;
+      this.statistics.successfulTasks++;
+      this.updateStatistics(executionTime);
+
+      this.currentTask.status = 'completed';
+      this.currentTask.completedAt = new Date().toISOString();
+      this.currentTask.executionTime = executionTime;
+      this.setState(AgentStates.DONE);
+
+      // 清除待执行状态
+      this.pendingExecution = null;
+
+      this.log('Task completed (continued)', { 
+        executionTime: `${(executionTime / 1000).toFixed(2)}s`,
+        skillCount: skillResults.length
+      });
+
+      return {
+        success: true,
+        ...finalResult,
+        executionTime,
+        skillResults: this.sanitizeSkillResults(skillResults),
+        statistics: this.getTaskStatistics()
+      };
+
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      this.statistics.failedTasks++;
+      this.updateStatistics(executionTime);
+
+      this.currentTask.status = 'failed';
+      this.currentTask.error = error.message;
+      this.currentTask.executionTime = executionTime;
+      this.setState(AgentStates.ERROR);
+
+      // 清除待执行状态
+      this.pendingExecution = null;
+
+      this.log('Task failed (continued)', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * 应用更改并更新记忆
+   * @param {Object} options - 选项
+   * @param {Function} llmCaller - LLM 调用函数
+   */
+  async applyChangesAndUpdateMemory(options = {}, llmCaller) {
+    if (!this.memory) {
+      throw new Error('Memory manager not available');
+    }
+
+    const { content, chapterNumber } = options;
+
+    if (!content) {
+      throw new Error('Content is required');
+    }
+
+    if (!chapterNumber) {
+      throw new Error('Chapter number is required');
+    }
+
+    try {
+      // 1. 最终化章节（结算 ChapterExtract）
+      const finalizeResult = await this.memory.finalizeChapter(chapterNumber);
+      
+      if (!finalizeResult.success) {
+        throw new Error(finalizeResult.error || 'Finalize chapter failed');
+      }
+
+      // 2. 更新记忆系统
+      const memoryUpdater = new MemoryUpdater(this.memory, this.workspaceRoot);
+      const context = await this.memory.loadContext('');
+      
+      const updateResult = await memoryUpdater.update(
+        content,
+        { userRequest: '应用更改并更新记忆' },
+        context,
+        llmCaller
+      );
+
+      this.log('Memory updated', { success: updateResult.success });
+
+      return {
+        success: true,
+        finalizeResult,
+        updateResult
+      };
+
+    } catch (error) {
+      this.log('Apply changes failed', { error: error.message }, 'ERROR');
+      throw error;
+    }
+  }
+
+  /**
    * 判断是否是关键 Skill
    */
   isCriticalSkill(skillName) {
@@ -723,14 +881,33 @@ class AgentOrchestrator {
       executionLog: this.executionLog.slice(-10)
     };
 
-    // 提取最终文本
-    for (const skillResult of skillResults.reverse()) {
+    // 提取最终文本（按优先级：rewrite_with_plan > write_chapter > rewrite_selected_text）
+    for (const skillResult of [...skillResults].reverse()) {
       if (skillResult.success && skillResult.result) {
+        // 优先使用 rewrite_with_plan 的结果
+        if (skillResult.skill === 'rewrite_with_plan' && skillResult.result.rewrittenContent) {
+          result.text = skillResult.result.rewrittenContent;
+          break;
+        }
+        // 其次使用 write_chapter 的结果
+        if (skillResult.skill === 'write_chapter' && skillResult.result.content) {
+          result.text = skillResult.result.content;
+          break;
+        }
+        // 最后使用 rewrite_selected_text 的结果
+        if (skillResult.skill === 'rewrite_selected_text' && skillResult.result.rewrittenText) {
+          result.text = skillResult.result.rewrittenText;
+          break;
+        }
+        // 兼容其他可能的字段名
         if (skillResult.result.content) {
           result.text = skillResult.result.content;
           break;
         } else if (skillResult.result.rewrittenText) {
           result.text = skillResult.result.rewrittenText;
+          break;
+        } else if (skillResult.result.rewrittenContent) {
+          result.text = skillResult.result.rewrittenContent;
           break;
         }
       }
@@ -770,6 +947,15 @@ class AgentOrchestrator {
           if (skillResult.result.violations) {
             result.checkResult.errors.push(...skillResult.result.violations);
           }
+          break;
+        
+        case 'check_all':
+          // check_all 返回完整的检查结果
+          result.checkResult = skillResult.result;
+          break;
+        
+        case 'plan_chapter_outline':
+          result.chapterPlan = skillResult.result;
           break;
       }
     }

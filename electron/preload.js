@@ -157,7 +157,9 @@ contextBridge.exposeInMainWorld('api', {
     getState: async () => await ipcRenderer.invoke('novelAgent:getState'),
     getLog: async (count) => await ipcRenderer.invoke('novelAgent:getLog', count),
     cancel: async () => await ipcRenderer.invoke('novelAgent:cancel'),
-    getCurrentTask: async () => await ipcRenderer.invoke('novelAgent:getCurrentTask')
+    getCurrentTask: async () => await ipcRenderer.invoke('novelAgent:getCurrentTask'),
+    continueExecution: async (options) => await ipcRenderer.invoke('novelAgent:continueExecution', options),
+    applyChangesAndUpdateMemory: async (options) => await ipcRenderer.invoke('novelAgent:applyChangesAndUpdateMemory', options)
   },
   // ========== 规则管理 ==========
   rules: {

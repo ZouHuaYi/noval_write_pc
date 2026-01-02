@@ -30,7 +30,7 @@ export interface FileChange {
 export interface AgentTask {
   id: string;
   description: string;
-  status: 'analyzing' | 'planning' | 'executing' | 'completed' | 'failed';
+  status: 'analyzing' | 'planning' | 'executing' | 'completed' | 'failed' | 'waiting_confirmation';
   changes: FileChange[];
   error?: string;
   // 保存执行结果，用于应用变更后更新记忆
@@ -38,6 +38,14 @@ export interface AgentTask {
     text: string;
     intent?: any;
     userRequest: string;
+  };
+  // 待确认的大纲信息
+  pendingConfirmation?: {
+    outline: string;
+    scenes: any[];
+    executionContext: any;
+    skillResults: any[];
+    pendingExecution: any;
   };
 }
 
@@ -223,6 +231,33 @@ export function useAgent(
         throw new Error(result.error || 'Novel Agent 执行失败');
       }
 
+      // 检查是否需要用户确认大纲
+      if (result.requiresUserConfirmation && result.confirmationType === 'outline') {
+        // 保存待确认的任务状态
+        task.status = 'waiting_confirmation';
+        task.pendingConfirmation = {
+          outline: result.outline,
+          scenes: result.scenes,
+          executionContext: result.executionContext,
+          skillResults: result.skillResults,
+          pendingExecution: result.pendingExecution
+        };
+
+        // 添加等待确认消息
+        const confirmMsg: AgentMessage = {
+          id: nextAgentMsgId++,
+          role: 'system',
+          content: `📋 章节大纲已生成，请确认后继续执行。\n\n大纲预览：\n${result.outline?.substring(0, 200)}...`,
+          timestamp: Date.now()
+        };
+        agentMessages.value.push(confirmMsg);
+
+        // 触发大纲确认对话框（通过事件或回调）
+        // 这里需要在前端组件中处理，显示对话框
+        // 暂时返回任务，等待用户确认
+        return task;
+      }
+
       // 解析结果，转换为 FileChange 格式
       const changes: FileChange[] = [];
 
@@ -322,9 +357,9 @@ export function useAgent(
       agentMessages.value.push(successMsg);
 
       // 如果有校验结果，显示详细信息
-      if (result.checkResult && result.checkResult.errors?.length > 0) {
+      if (result.checkResult && Array.isArray(result.checkResult.errors) && result.checkResult.errors.length > 0) {
         const errorDetails = result.checkResult.errors
-          .map((e: any) => `- ${e.message}`)
+          .map((e: any) => `- ${e.message || e.issue || JSON.stringify(e)}`)
           .join('\n');
         const errorMsg: AgentMessage = {
           id: nextAgentMsgId++,
@@ -496,6 +531,175 @@ export function useAgent(
     currentDiff.value = null;
   };
 
+  /**
+   * 确认大纲并继续执行
+   * @param task - 待确认的任务
+   * @param userModifiedOutline - 用户修改后的大纲（可选）
+   */
+  const confirmOutlineAndContinue = async (task: AgentTask, userModifiedOutline?: string): Promise<AgentTask> => {
+    if (!task.pendingConfirmation) {
+      throw new Error('任务没有待确认的大纲');
+    }
+
+    if (!window.api?.novelAgent) {
+      throw new Error('Novel Agent API 不可用');
+    }
+
+    isAgentLoading.value = true;
+
+    try {
+      // 添加确认消息
+      const confirmMsg: AgentMessage = {
+        id: nextAgentMsgId++,
+        role: 'system',
+        content: '✅ 大纲已确认，继续执行...',
+        timestamp: Date.now()
+      };
+      agentMessages.value.push(confirmMsg);
+
+      // 调用继续执行
+      const result = await window.api.novelAgent.continueExecution({
+        userModifiedOutline: userModifiedOutline
+      });
+
+      if (!result.success) {
+        throw new Error(result.error || '继续执行失败');
+      }
+
+      // 清除待确认状态
+      task.pendingConfirmation = undefined;
+      task.status = 'analyzing';
+
+      // 解析结果，转换为 FileChange 格式
+      const changes: FileChange[] = [];
+
+      // 如果返回了文本，需要创建或修改文件
+      if (result.text) {
+        const targetFileName = extractTargetFile(task.description);
+        let targetFilePath = result.target_file_path;
+        let finalTargetFileName = targetFileName;
+
+        if (!targetFilePath) {
+          const action = determineAction(task.description, targetFileName);
+          targetFilePath = targetFileName;
+          if (workspaceRoot.value && targetFilePath && !targetFilePath.startsWith(workspaceRoot.value)) {
+            const allFiles = fileTree.value ? getAllFiles(fileTree.value) : [];
+            const matchedFile = allFiles.find(f => f.name === targetFileName || f.relativePath === targetFileName);
+            if (matchedFile && matchedFile.path) {
+              targetFilePath = matchedFile.path;
+              finalTargetFileName = matchedFile.name;
+            } else {
+              targetFilePath = `${workspaceRoot.value}/${targetFileName}`;
+            }
+          } else if (!targetFilePath && workspaceRoot.value) {
+            targetFilePath = `${workspaceRoot.value}/${targetFileName}`;
+          }
+        } else {
+          if (targetFilePath) {
+            const pathParts = targetFilePath.split(/[/\\]/);
+            finalTargetFileName = pathParts && pathParts.length > 0 ? pathParts[pathParts.length - 1] : targetFileName;
+          } else {
+            finalTargetFileName = targetFileName;
+          }
+        }
+
+        const intentType = result.intent_analysis?.intent_type;
+        const action = intentType === 'REWRITE' || intentType === 'CHECK' ? 'modify' : 
+                      (intentType === 'CREATE' ? 'create' : determineAction(task.description, targetFileName));
+
+        if (action === 'create') {
+          changes.push({
+            id: `change_${nextChangeId++}`,
+            filePath: targetFilePath,
+            fileName: finalTargetFileName,
+            action: 'create',
+            newContent: result.text,
+            description: result.intent?.goal || '创建新章节',
+            status: 'pending'
+          });
+        } else {
+          let oldContent = result.intent?.original_content;
+          if (!oldContent) {
+            oldContent = await readFile(targetFilePath) || '';
+          }
+          
+          changes.push({
+            id: `change_${nextChangeId++}`,
+            filePath: targetFilePath,
+            fileName: finalTargetFileName,
+            action: 'modify',
+            oldContent: oldContent,
+            newContent: result.text,
+            description: result.intent?.goal || (intentType === 'REWRITE' ? '重写章节' : '修改文本'),
+            status: 'pending'
+          });
+        }
+      }
+
+      task.changes = changes;
+      task.status = 'completed';
+      
+      // 保存执行结果
+      task.executionResult = {
+        text: result.text || '',
+        intent: result.intent,
+        userRequest: task.description
+      };
+
+      // 添加成功消息
+      const successMsg: AgentMessage = {
+        id: nextAgentMsgId++,
+        role: 'assistant',
+        content: `✅ Novel Agent 执行完成！\n\n` +
+          `📊 执行摘要：\n` +
+          `- 意图规划：${result.intent ? '✅' : '❌'}\n` +
+          `- 一致性校验：${result.checkResult?.status === 'pass' ? '✅ 通过' : '⚠️ 未通过'}\n` +
+          `- 重写次数：${result.rewriteCount || 0}\n` +
+          `- 生成文本长度：${result.text?.length || 0} 字符\n\n` +
+          (result.checkResult?.status === 'pass' 
+            ? '✅ 文本已通过一致性校验，符合世界观和人物设定。\n\n'
+            : '⚠️ 文本未通过一致性校验，请检查。\n\n') +
+          `📝 提示：请点击"应用全部变更"按钮查看预览并确认应用变更。应用变更成功后，系统将自动更新记忆。`,
+        timestamp: Date.now()
+      };
+      agentMessages.value.push(successMsg);
+
+      // 如果有校验结果，显示详细信息
+      if (result.checkResult && Array.isArray(result.checkResult.errors) && result.checkResult.errors.length > 0) {
+        const errorDetails = result.checkResult.errors
+          .map((e: any) => `- ${e.message || e.issue || JSON.stringify(e)}`)
+          .join('\n');
+        const errorMsg: AgentMessage = {
+          id: nextAgentMsgId++,
+          role: 'system',
+          content: `⚠️ 一致性校验发现问题：\n${errorDetails}`,
+          timestamp: Date.now()
+        };
+        agentMessages.value.push(errorMsg);
+      }
+
+      return task;
+
+    } catch (error: any) {
+      console.error('❌ 继续执行失败:', error);
+      task.status = 'failed';
+      task.error = error.message;
+
+      const errorMsg: AgentMessage = {
+        id: nextAgentMsgId++,
+        role: 'system',
+        content: `❌ 继续执行失败：${error.message}`,
+        timestamp: Date.now()
+      };
+      agentMessages.value.push(errorMsg);
+
+      showAlert(error.message, '继续执行失败', 'danger');
+      return task;
+    } finally {
+      isAgentLoading.value = false;
+    }
+  };
+
   return {
     // 状态
     agentMessages,
@@ -517,6 +721,7 @@ export function useAgent(
     clearAgentHistory, // 别名
     resetAgent,
     cancelAgent,
-    setNovelAgentRef
+    setNovelAgentRef,
+    confirmOutlineAndContinue
   };
 }

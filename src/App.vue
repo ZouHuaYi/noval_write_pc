@@ -349,6 +349,15 @@
       @reject="handleRejectChange"
     />
 
+    <!-- 大纲确认对话框 -->
+    <OutlineConfirmationDialog
+      :visible="showOutlineConfirmation"
+      :outline="outlineConfirmationData?.outline || ''"
+      :scenes="outlineConfirmationData?.scenes || []"
+      @confirm="handleOutlineConfirm"
+      @cancel="handleOutlineCancel"
+    />
+
     <!-- 应用全部变更确认对话框 -->
     <div v-if="showApplyAllConfirm" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click="showApplyAllConfirm = false">
       <div class="bg-slate-800 rounded-lg p-6 max-w-md w-full mx-4 border border-slate-700" @click.stop>
@@ -389,6 +398,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AgentLog from './components/AgentLog.vue';
 import AgentPanel from './components/AgentPanel.vue';
 import AlertDialog from './components/AlertDialog.vue';
+import OutlineConfirmationDialog from './components/OutlineConfirmationDialog.vue';
 import BatchConsistencyDialog from './components/BatchConsistencyDialog.vue';
 import ChatPanel from './components/ChatPanel.vue';
 import ConsistencyDialog from './components/ConsistencyDialog.vue';
@@ -468,6 +478,16 @@ const rules = useRules();
 const showSettingsDialog = ref(false);
 const showVectorIndexDialog = ref(false);
 const showUserGuideDialog = ref(false);
+const showOutlineConfirmation = ref(false);
+const outlineConfirmationData = ref<{
+  outline: string;
+  scenes: any[];
+  task: any;
+}>({
+  outline: '',
+  scenes: [],
+  task: null
+});
 const chatPanelRef = ref<any>(null);
 const rightPanelMode = ref<'chat' | 'agent' | 'memory' | 'log' | 'rules'>('agent');
 const editorEl = ref<HTMLElement | null>(null);
@@ -863,7 +883,15 @@ const handleAgentSend = async () => {
   agent.agentInput.value = '';
 
   try {
-    await agent.analyzeRequest(userRequest);
+    const task = await agent.analyzeRequest(userRequest);
+    
+    // 检查是否需要确认大纲
+    if (task.status === 'waiting_confirmation' && task.pendingConfirmation) {
+      showOutlineConfirmation.value = true;
+      outlineConfirmationData.value.outline = task.pendingConfirmation.outline || '';
+      outlineConfirmationData.value.scenes = task.pendingConfirmation.scenes || [];
+      outlineConfirmationData.value.task = task;
+    }
   } catch (error: any) {
     console.error('Agent 执行失败:', error);
     showAlert(error.message, 'Agent 执行失败', 'danger');
@@ -873,6 +901,46 @@ const handleAgentSend = async () => {
 // Agent 取消
 const handleAgentCancel = async () => {
   await agent.cancelAgent();
+};
+
+// 大纲确认处理
+const handleOutlineConfirm = async (modifiedOutline?: string) => {
+  if (!outlineConfirmationData.value.task) {
+    showOutlineConfirmation.value = false;
+    return;
+  }
+
+  try {
+    showOutlineConfirmation.value = false;
+    const task = await agent.confirmOutlineAndContinue(
+      outlineConfirmationData.value.task,
+      modifiedOutline
+    );
+    
+    // 如果继续执行后仍然需要确认，再次显示对话框
+    if (task.status === 'waiting_confirmation' && task.pendingConfirmation) {
+      showOutlineConfirmation.value = true;
+      outlineConfirmationData.value.outline = task.pendingConfirmation.outline || '';
+      outlineConfirmationData.value.scenes = task.pendingConfirmation.scenes || [];
+      outlineConfirmationData.value.task = task;
+    }
+  } catch (error: any) {
+    console.error('确认大纲失败:', error);
+    showAlert(error.message, '确认大纲失败', 'danger');
+    showOutlineConfirmation.value = false;
+  }
+};
+
+const handleOutlineCancel = () => {
+  showOutlineConfirmation.value = false;
+  outlineConfirmationData.value = {
+    outline: '',
+    scenes: [],
+    task: null
+  };
+  if (outlineConfirmationData.value.task) {
+    outlineConfirmationData.value.task.status = 'failed';
+  }
 };
 
 const handleShowDiff = (change: FileChange) => {
