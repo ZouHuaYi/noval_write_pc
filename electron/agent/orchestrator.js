@@ -1069,28 +1069,43 @@ class AgentOrchestrator {
 4. **保持风格统一**：遵循 intent.writing_guidelines 中的风格要求
 5. **情节连贯**：基于当前剧情状态，合理推进情节
 
-# 输出要求
-- 必须有章节标题
-- 直接输出小说文本，不要添加任何解释、说明或标记
-- 文本应该完整、连贯，符合小说写作规范
-- 长度根据需求确定，通常 1000-3000 字
-- 保持段落结构，使用适当的换行`;
+# 输出要求（必须严格遵守）
+1. **章节标题**：必须以"第X章 标题"的格式开始，例如"第3章 突破"
+2. **直接输出**：直接输出小说文本，不要添加任何标记、说明、解释或注释
+3. **文本长度**：必须达到 1000-3000 字，确保内容充实
+4. **段落结构**：使用适当的换行，保持段落清晰，每段 3-5 句
+5. **风格一致**：必须与提供的上下文风格保持一致
+6. **完整性**：文本应该完整、连贯，符合小说写作规范
+
+# 输出格式示例
+第3章 突破
+
+张明盘膝而坐，体内的灵力缓缓运转。他感受着雷种在丹田中跳动的节奏，每一次跳动都带来微弱的能量波动...
+
+（继续正文，不要有任何说明文字）
+
+⚠️ 重要提醒：
+- 不要输出 JSON 格式
+- 不要输出 Markdown 格式
+- 不要添加任何解释或说明
+- 直接输出纯文本小说内容`;
 
     // 构建用户提示词
     let userPrompt = '';
 
-    // 设定文件（优先显示，特别是前面几章）
+    // 设定文件（优先显示，特别是前面几章，完整加载不截断）
     if (context.text_context && context.text_context.settings && context.text_context.settings.length > 0) {
       userPrompt += `# 基础设定（重要：请严格遵守这些设定）\n`;
       for (const setting of context.text_context.settings) {
         userPrompt += `\n## ${setting.file}\n`;
-        const maxLength = 2000;
+        // 完整加载设定文件，不截断（但限制单个文件最大 5000 字，避免过长）
+        const maxLength = 5000;
         const content = setting.content.length > maxLength 
-          ? setting.content.substring(0, maxLength) + '...' 
+          ? setting.content.substring(0, maxLength) + '\n\n[设定文件内容较长，已截断，请参考关键信息]' 
           : setting.content;
         userPrompt += `${content}\n`;
       }
-      userPrompt += '\n';
+      userPrompt += '\n⚠️ 以上设定是必须严格遵守的规则，任何违反设定的内容都是错误的。\n\n';
     }
 
     userPrompt += `# 写作意图
@@ -1142,9 +1157,9 @@ ${JSON.stringify({
       const result = await llmCaller({
         systemPrompt,
         userPrompt,
-        temperature: 0.7, // 写作需要一定的创造性
+        temperature: 0.5, // 降低到 0.5，提高稳定性和准确性（从 0.7 降低）
         maxTokens: 4096,
-        topP: 0.95
+        topP: 0.9 // 降低到 0.9，进一步控制输出质量（从 0.95 降低）
       });
 
       // 处理返回值：createLLMCaller 返回 { success: true, response: "文本" } 或 { success: false, error: "错误" }

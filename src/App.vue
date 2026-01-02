@@ -952,96 +952,123 @@ const confirmApplyAllChanges = async () => {
       }
     }
     
-    if (fs.workspaceRoot.value && memory.initialized.value && agent.currentTask.value?.executionResult) {
-      const execResult = agent.currentTask.value.executionResult;
-      
-      if (execResult.text && execResult.userRequest) {
-        try {
-          // 等待文件创建完成（延迟 1 秒，确保文件系统操作完成）
-          console.log('⏳ 等待文件创建完成...');
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          
-          // 2.1 章节分析（如果有章节文件）
-          const appliedFiles = pendingChanges
-            .filter(c => c.status === 'applied')
-            .map(c => {
-              // 构建完整文件路径
-              const fullPath = c.filePath.startsWith(fs.workspaceRoot.value)
-                ? c.filePath
-                : `${fs.workspaceRoot.value}/${c.filePath}`;
-              return { filePath: fullPath, fileName: c.fileName };
-            });
-          
-          if (appliedFiles.length > 0) {
-            console.log('📊 开始分析已应用的章节...');
-            try {
-              // 分析每个章节文件（添加重试机制）
-              for (const file of appliedFiles) {
-                // 尝试从文件名提取章节号
-                const chapterMatch = file.fileName.match(/第(\d+)/);
-                if (chapterMatch) {
-                  const chapterNum = parseInt(chapterMatch[1]);
-                  console.log(`📊 分析章节文件: 第${chapterNum}章 - ${file.fileName}`);
-                  
-                  // 等待文件可读（最多重试 3 次，每次等待 500ms）
-                  let retryCount = 0;
-                  let analyzeResult:any = null;
-                  
-                  while (retryCount < 3 && !analyzeResult?.success) {
-                    if (retryCount > 0) {
-                      console.log(`⏳ 重试分析章节文件 (${retryCount}/3)...`);
-                      await new Promise(resolve => setTimeout(resolve, 500));
-                    }
-                    
-                    // 触发章节分析
-                    analyzeResult = await window.api?.memory?.analyzeChapter?.(
-                      file.filePath,
-                      chapterNum
-                    );
-                    
-                    if (analyzeResult?.success) {
-                      console.log(`✅ 章节分析完成: 第${chapterNum}章`);
-                      break;
-                    } else {
-                      retryCount++;
-                      if (retryCount < 3) {
-                        console.warn(`⚠️ 章节分析失败，将重试: 第${chapterNum}章 - ${analyzeResult?.error}`);
-                      }
-                    }
-                  }
-                  
-                  if (!analyzeResult?.success) {
-                    console.warn(`⚠️ 章节分析最终失败: 第${chapterNum}章 - ${analyzeResult?.error || '未知错误'}`);
-                  }
-                } else {
-                  console.log(`ℹ️ 跳过非章节文件: ${file.fileName}`);
+    // 步骤 2: 应用变更成功后，自动更新记忆系统
+    if (fs.workspaceRoot.value && memory.initialized.value) {
+      try {
+        // 等待文件创建完成（延迟 1 秒，确保文件系统操作完成）
+        console.log('⏳ 等待文件创建完成...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // 获取已应用的文件列表
+        const appliedFiles = pendingChanges
+          .filter(c => c.status === 'applied')
+          .map(c => {
+            // 构建完整文件路径
+            const fullPath = c.filePath.startsWith(fs.workspaceRoot.value)
+              ? c.filePath
+              : `${fs.workspaceRoot.value}/${c.filePath}`;
+            return { filePath: fullPath, fileName: c.fileName, newContent: c.newContent };
+          });
+        
+        if (appliedFiles.length === 0) {
+          console.log('ℹ️ 没有已应用的文件，跳过记忆更新');
+          return;
+        }
+        
+        // 2.1 章节分析（如果有章节文件）
+        const chapterFiles: Array<{ filePath: string; fileName: string; chapterNum: number }> = [];
+        
+        for (const file of appliedFiles) {
+          // 尝试从文件名提取章节号
+          const chapterMatch = file.fileName.match(/第(\d+)/);
+          if (chapterMatch) {
+            const chapterNum = parseInt(chapterMatch[1]);
+            chapterFiles.push({ filePath: file.filePath, fileName: file.fileName, chapterNum });
+            
+            console.log(`📊 分析章节文件: 第${chapterNum}章 - ${file.fileName}`);
+            
+            // 等待文件可读（最多重试 3 次，每次等待 500ms）
+            let retryCount = 0;
+            let analyzeResult: any = null;
+            
+            while (retryCount < 3 && !analyzeResult?.success) {
+              if (retryCount > 0) {
+                console.log(`⏳ 重试分析章节文件 (${retryCount}/3)...`);
+                await new Promise(resolve => setTimeout(resolve, 500));
+              }
+              
+              // 触发章节分析
+              analyzeResult = await window.api?.memory?.analyzeChapter?.(
+                file.filePath,
+                chapterNum
+              );
+              
+              if (analyzeResult?.success) {
+                console.log(`✅ 章节分析完成: 第${chapterNum}章`);
+                break;
+              } else {
+                retryCount++;
+                if (retryCount < 3) {
+                  console.warn(`⚠️ 章节分析失败，将重试: 第${chapterNum}章 - ${analyzeResult?.error}`);
                 }
               }
-            } catch (err: any) {
-              console.warn('⚠️ 章节分析失败:', err);
+            }
+            
+            if (!analyzeResult?.success) {
+              console.warn(`⚠️ 章节分析最终失败: 第${chapterNum}章 - ${analyzeResult?.error || '未知错误'}`);
             }
           }
+        }
+        
+        // 2.2 更新记忆系统
+        // 再次检查是否已经在更新（防止并发）
+        if (memory.isUpdating.value) {
+          console.log('ℹ️ 记忆系统正在更新中，跳过重复更新');
+          return;
+        }
+        
+        console.log('💾 开始更新记忆系统...');
+        
+        // 设置更新状态
+        memory.isUpdating.value = true;
+        
+        try {
+          // 优先使用 executionResult 中的文本，如果没有则从文件中读取
+          let textToUpdate = '';
+          let userRequestToUpdate = '';
+          let intentToUpdate = '';
           
-          // 2.2 更新记忆系统（基于生成的文本）
-          // 再次检查是否已经在更新（防止并发）
-          if (memory.isUpdating.value) {
-            console.log('ℹ️ 记忆系统正在更新中，跳过重复更新');
-            return;
-          }
-          
-          console.log('💾 开始更新记忆系统...');
-          
-          // 设置更新状态
-          memory.isUpdating.value = true;
-          
-          try {
-            // 确保传递的数据是可序列化的（避免克隆错误）
-            const textToUpdate = typeof execResult.text === 'string' ? execResult.text : String(execResult.text || '');
-            const userRequestToUpdate = typeof execResult.userRequest === 'string' ? execResult.userRequest : String(execResult.userRequest || '');
-            const intentToUpdate = typeof execResult.intent === 'string' 
+          const execResult = agent.currentTask.value?.executionResult;
+          if (execResult?.text && execResult?.userRequest) {
+            // 使用执行结果中的文本
+            textToUpdate = typeof execResult.text === 'string' ? execResult.text : String(execResult.text || '');
+            userRequestToUpdate = typeof execResult.userRequest === 'string' ? execResult.userRequest : String(execResult.userRequest || '');
+            intentToUpdate = typeof execResult.intent === 'string' 
               ? execResult.intent 
               : (execResult.intent ? JSON.stringify(execResult.intent) : '');
-            
+          } else {
+            // 从应用的文件中读取内容
+            const allTexts: string[] = [];
+            for (const file of appliedFiles) {
+              if (file.newContent) {
+                allTexts.push(file.newContent);
+              } else {
+                // 尝试读取文件内容
+                try {
+                  const content = await window.api?.readFile?.(file.filePath);
+                  if (content) {
+                    allTexts.push(content);
+                  }
+                } catch (err) {
+                  console.warn(`⚠️ 读取文件失败: ${file.filePath}`, err);
+                }
+              }
+            }
+            textToUpdate = allTexts.join('\n\n');
+            userRequestToUpdate = agent.currentTask.value?.request || '应用变更';
+          }
+          
+          if (textToUpdate) {
             const updateResult = await window.api?.memory?.updateFromText?.(
               textToUpdate,
               userRequestToUpdate,
@@ -1056,30 +1083,6 @@ const confirmApplyAllChanges = async () => {
                 await memory.getSummary();
                 await memory.getAllCharacters();
                 await memory.getPendingForeshadows();
-                
-                // 自动结算机制（如果启用）
-                const autoFinalizeResult = await window.api?.settings?.get?.('autoFinalizeChapter');
-                const autoFinalize = autoFinalizeResult?.success && (autoFinalizeResult.value === 'true' || autoFinalizeResult.value === true);
-                if (autoFinalize) {
-                  // 从应用的文件中提取章节号
-                  for (const file of appliedFiles) {
-                    const chapterMatch = file.fileName.match(/第(\d+)/);
-                    if (chapterMatch) {
-                      const chapterNum = parseInt(chapterMatch[1]);
-                      console.log(`🔄 自动结算第${chapterNum}章（已启用自动结算）...`);
-                      try {
-                        const finalizeResult = await window.api?.memory?.finalizeChapter?.(chapterNum);
-                        if (finalizeResult?.success) {
-                          console.log(`✅ 第${chapterNum}章自动结算完成`);
-                        } else {
-                          console.warn(`⚠️ 第${chapterNum}章自动结算失败:`, finalizeResult?.error);
-                        }
-                      } catch (err) {
-                        console.warn(`⚠️ 自动结算失败（不影响主流程）:`, err);
-                      }
-                    }
-                  }
-                }
               } else {
                 console.log('ℹ️ 无需更新记忆');
               }
@@ -1087,17 +1090,42 @@ const confirmApplyAllChanges = async () => {
               console.warn('⚠️ 更新记忆系统失败:', updateResult?.error);
               showAlert(`记忆系统更新失败: ${updateResult?.error}`, '警告', 'warning');
             }
-          } finally {
-            // 无论成功失败，都要重置更新状态
-            memory.isUpdating.value = false;
+          } else {
+            console.warn('⚠️ 没有可用的文本内容，跳过记忆更新');
           }
-        } catch (err: any) {
-          console.warn('⚠️ 更新流程失败:', err);
-          showAlert(`更新流程失败: ${err.message}`, '警告', 'warning');
-          // 确保重置更新状态
+          
+          // 2.3 自动结算机制（如果启用）
+          const autoFinalizeResult = await window.api?.settings?.get?.('autoFinalizeChapter');
+          const autoFinalize = autoFinalizeResult?.success && (autoFinalizeResult.value === 'true' || autoFinalizeResult.value === true);
+          
+          if (autoFinalize && chapterFiles.length > 0) {
+            console.log(`🔄 自动结算 ${chapterFiles.length} 个章节（已启用自动结算）...`);
+            for (const file of chapterFiles) {
+              try {
+                const finalizeResult = await window.api?.memory?.finalizeChapter?.(file.chapterNum);
+                if (finalizeResult?.success) {
+                  console.log(`✅ 第${file.chapterNum}章自动结算完成`);
+                } else {
+                  console.warn(`⚠️ 第${file.chapterNum}章自动结算失败:`, finalizeResult?.error);
+                }
+              } catch (err) {
+                console.warn(`⚠️ 第${file.chapterNum}章自动结算失败（不影响主流程）:`, err);
+              }
+            }
+            showAlert(`已自动结算 ${chapterFiles.length} 个章节`, '成功', 'info');
+          }
+        } finally {
+          // 无论成功失败，都要重置更新状态
           memory.isUpdating.value = false;
         }
+      } catch (err: any) {
+        console.warn('⚠️ 更新流程失败:', err);
+        showAlert(`更新流程失败: ${err.message}`, '警告', 'warning');
+        // 确保重置更新状态
+        memory.isUpdating.value = false;
       }
+    } else if (!memory.initialized.value) {
+      console.log('ℹ️ 记忆系统未初始化，跳过记忆更新');
     }
   } catch (error: any) {
     console.error('应用变更失败:', error);
