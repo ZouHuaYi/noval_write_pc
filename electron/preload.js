@@ -162,10 +162,12 @@ contextBridge.exposeInMainWorld('api', {
     applyChangesAndUpdateMemory: async (options) => await ipcRenderer.invoke('novelAgent:applyChangesAndUpdateMemory', options)
   },
   // ========== 规则管理 ==========
+  // 注意：旧的规则引擎接口已删除，现在只使用 DSL 规则引擎
+  // DSL 规则引擎通过 Agent 内部使用，不提供独立的 IPC 接口
   rules: {
-    getAll: async () => await ipcRenderer.invoke('rules:getAll'),
-    reload: async () => await ipcRenderer.invoke('rules:reload'),
-    getStats: async () => await ipcRenderer.invoke('rules:getStats')
+    getAll: async () => ({ success: false, error: '旧的规则引擎已删除，请使用 DSL 规则引擎' }),
+    reload: async () => ({ success: false, error: '旧的规则引擎已删除，请使用 DSL 规则引擎' }),
+    getStats: async () => ({ success: false, error: '旧的规则引擎已删除，请使用 DSL 规则引擎' })
   },
   // ========== 使用说明 ==========
   guide: {

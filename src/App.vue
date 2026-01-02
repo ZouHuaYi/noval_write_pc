@@ -398,7 +398,6 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AgentLog from './components/AgentLog.vue';
 import AgentPanel from './components/AgentPanel.vue';
 import AlertDialog from './components/AlertDialog.vue';
-import OutlineConfirmationDialog from './components/OutlineConfirmationDialog.vue';
 import BatchConsistencyDialog from './components/BatchConsistencyDialog.vue';
 import ChatPanel from './components/ChatPanel.vue';
 import ConsistencyDialog from './components/ConsistencyDialog.vue';
@@ -407,6 +406,7 @@ import DiffPreview from './components/DiffPreview.vue';
 import FileSidebar from './components/FileSidebar.vue';
 import InputDialog from './components/InputDialog.vue';
 import MemoryViewer from './components/MemoryViewer.vue';
+import OutlineConfirmationDialog from './components/OutlineConfirmationDialog.vue';
 import RuleEditor from './components/RuleEditor.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import TitleBar from './components/TitleBar.vue';
@@ -977,6 +977,10 @@ const handleApplyAllChanges = async () => {
 };
 
 const confirmApplyAllChanges = async () => {
+  if (!agent.currentTask.value) {
+    showAlert('没有待应用的任务', '提示', 'warning');
+    return;
+  }
   showApplyAllConfirm.value = false;
   
   if (!agent.currentTask.value) return;
@@ -1133,7 +1137,7 @@ const confirmApplyAllChanges = async () => {
               }
             }
             textToUpdate = allTexts.join('\n\n');
-            userRequestToUpdate = agent.currentTask.value?.request || '应用变更';
+            userRequestToUpdate = agent.currentTask.value?.executionResult?.userRequest || agent.currentTask.value?.description || '应用变更';
           }
           
           if (textToUpdate) {

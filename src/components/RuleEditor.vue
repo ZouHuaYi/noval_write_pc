@@ -39,7 +39,7 @@
           <li><strong>logic:</strong> 逻辑矛盾</li>
         </ul>
         <p class="mt-3 text-xs text-slate-400">
-          💡 提示：自定义规则请编辑 <code class="px-1.5 py-0.5 bg-slate-900 rounded text-emerald-400 font-mono">rules/consistency-rules.json</code> 文件
+          💡 提示：自定义规则请编辑 <code class="px-1.5 py-0.5 bg-slate-900 rounded text-emerald-400 font-mono">rules/dsl-rules.json</code> 文件
         </p>
       </div>
     </div>

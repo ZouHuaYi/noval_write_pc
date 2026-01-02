@@ -2068,48 +2068,8 @@ ${similarChunks.map((chunk, idx) =>
   });
 
   // ==================== 规则管理 IPC ====================
-
-  // 获取所有规则
-  ipcMain.handle('rules:getAll', async () => {
-    try {
-      if (!currentAgent || !currentAgent.ruleEngine) {
-        return { success: false, error: 'Agent 未初始化或规则引擎不可用' };
-      }
-
-      const rules = currentAgent.ruleEngine.getAllRules();
-      return { success: true, rules };
-    } catch (err) {
-      return { success: false, error: err.message };
-    }
-  });
-
-  // 重新加载规则
-  ipcMain.handle('rules:reload', async () => {
-    try {
-      if (!currentAgent || !currentAgent.ruleEngine) {
-        return { success: false, error: 'Agent 未初始化或规则引擎不可用' };
-      }
-
-      const result = await currentAgent.ruleEngine.reload();
-      return result;
-    } catch (err) {
-      return { success: false, error: err.message };
-    }
-  });
-
-  // 获取规则统计
-  ipcMain.handle('rules:getStats', async () => {
-    try {
-      if (!currentAgent || !currentAgent.ruleEngine) {
-        return { success: false, error: 'Agent 未初始化或规则引擎不可用' };
-      }
-
-      const stats = currentAgent.ruleEngine.getStatistics();
-      return { success: true, stats };
-    } catch (err) {
-      return { success: false, error: err.message };
-    }
-  });
+  // 注意：旧的规则引擎 IPC 接口已删除，现在只使用 DSL 规则引擎
+  // DSL 规则引擎通过 Agent 内部使用，不提供独立的 IPC 接口
 
   // ==================== 设置管理 IPC ====================
   
