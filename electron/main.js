@@ -1,8 +1,8 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { initDatabase, llmModels, embeddingModels, settings, workspaceHistory, vectorIndex, consistencyResults, closeDatabase } = require('./database');
-const { callLLM } = require('./llm');
+const { initDatabase, llmModels, embeddingModels, settings, workspaceHistory, vectorIndex, consistencyResults, closeDatabase } = require('./core/database');
+const { callLLM } = require('./core/llm');
 
 // Novel Agent 和记忆系统
 const AgentOrchestrator = require('./agent/orchestrator');

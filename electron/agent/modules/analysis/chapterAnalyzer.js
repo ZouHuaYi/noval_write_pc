@@ -285,7 +285,7 @@ ${content.substring(0, 8000)}${content.length > 8000 ? '\n\n[文本已截断]' :
    * 解析分析结果
    */
   parseAnalysisResult(response) {
-    const { safeParseJSON } = require('../utils/jsonParser');
+    const { safeParseJSON } = require('../../../utils/jsonParser');
     
     try {
       const result = safeParseJSON(response, {

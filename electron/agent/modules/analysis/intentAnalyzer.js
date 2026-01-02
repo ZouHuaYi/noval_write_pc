@@ -3,7 +3,7 @@
  * 先理解用户输入的意图，然后规划执行流程
  */
 
-const { safeParseJSON } = require('../utils/jsonParser');
+const { safeParseJSON } = require('../../../utils/jsonParser');
 
 class IntentAnalyzer {
   constructor() {

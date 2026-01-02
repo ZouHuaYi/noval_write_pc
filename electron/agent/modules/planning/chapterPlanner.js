@@ -512,7 +512,7 @@ class ChapterPlanner {
    * 解析规划结果
    */
   parsePlanningResult(response) {
-    const { safeParseJSON } = require('../utils/jsonParser');
+    const { safeParseJSON } = require('../../../utils/jsonParser');
     
     try {
       const result = safeParseJSON(response, {

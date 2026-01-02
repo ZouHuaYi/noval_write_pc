@@ -4,7 +4,7 @@
  * 不再直接写入长期记忆，而是通过 ChapterFinalizer 结算
  */
 
-const ExtractWriter = require('../memory/extractWriter');
+const ExtractWriter = require('../../memory/extractors/extractWriter');
 
 class MemoryUpdater {
   constructor(memoryManager, workspaceRoot) {

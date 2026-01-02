@@ -3,7 +3,7 @@
  * 基于记忆和用户需求，生成详细的写作意图
  */
 
-const { safeParseJSON } = require('../utils/jsonParser');
+const { safeParseJSON } = require('../../../utils/jsonParser');
 
 class IntentPlanner {
   constructor() {

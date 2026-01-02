@@ -4,7 +4,7 @@
  * 用于续写场景，确保新章节与前章自然衔接
  */
 
-const EventExtractor = require('./eventExtractor');
+const EventExtractor = require('../analysis/eventExtractor');
 
 class CoherenceChecker {
   constructor(dslRuleEngine = null, memoryManager = null) {
@@ -548,7 +548,7 @@ ${newChapterText.substring(0, 2000)}${newChapterText.length > 2000 ? '\n\n[文�
    * 解析连贯性检查结果
    */
   parseCoherenceResult(response) {
-    const { safeParseJSON } = require('../utils/jsonParser');
+    const { safeParseJSON } = require('../../../utils/jsonParser');
     
     try {
       const result = safeParseJSON(response, {

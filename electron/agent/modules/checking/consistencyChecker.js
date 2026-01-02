@@ -9,8 +9,8 @@
  * 核心升级：从「靠 prompt + 模型判断」➡️「像编译器一样判定小说是否合法」
  */
 
-const { safeParseJSON } = require('../utils/jsonParser');
-const EventExtractor = require('./eventExtractor');
+const { safeParseJSON } = require('../../../utils/jsonParser');
+const EventExtractor = require('../analysis/eventExtractor');
 
 class ConsistencyChecker {
   constructor(ruleEngine) {

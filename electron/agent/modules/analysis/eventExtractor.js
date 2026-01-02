@@ -125,7 +125,7 @@ class EventExtractor {
    * 解析抽取结果
    */
   parseExtractResult(response) {
-    const { safeParseJSON } = require('../utils/jsonParser');
+    const { safeParseJSON } = require('../../../utils/jsonParser');
     
     try {
       const result = safeParseJSON(response, {

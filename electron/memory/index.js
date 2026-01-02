@@ -3,14 +3,14 @@
  * 统一管理所有类型的记忆
  */
 
-const WorldMemory = require('./worldMemory');
-const CharacterMemory = require('./characterMemory');
-const PlotMemory = require('./plotMemory');
-const ForeshadowMemory = require('./foreshadowMemory');
-const SettingExtractor = require('./settingExtractor');
-const IntelligentExtractor = require('./intelligentExtractor');
+const WorldMemory = require('./core/worldMemory');
+const CharacterMemory = require('./core/characterMemory');
+const PlotMemory = require('./core/plotMemory');
+const ForeshadowMemory = require('./core/foreshadowMemory');
+const SettingExtractor = require('./extractors/settingExtractor');
+const IntelligentExtractor = require('./extractors/intelligentExtractor');
 const ChapterFinalizer = require('./finalizer/chapterFinalizer');
-const ExtractWriter = require('./extractWriter');
+const ExtractWriter = require('./extractors/extractWriter');
 const ConceptResolver = require('./finalizer/conceptResolver');
 const ForeshadowPanel = require('./finalizer/foreshadowPanel');
 const CharacterStateKnowledge = require('./finalizer/characterStateKnowledge');
@@ -48,7 +48,7 @@ class MemoryManager {
       };
 
       try {
-        const { embeddingModels } = require('../database');
+        const { embeddingModels } = require('../core/database');
         const defaultEmbeddingModel = embeddingModels.getDefault();
         if (defaultEmbeddingModel && defaultEmbeddingModel.base_url && defaultEmbeddingModel.api_key && defaultEmbeddingModel.model) {
           // 使用数据库中的 embedding 模型配置

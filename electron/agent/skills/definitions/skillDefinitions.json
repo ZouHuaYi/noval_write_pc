@@ -1,0 +1,651 @@
+{
+  "skills": [
+    {
+      "name": "load_story_context",
+      "category": "context",
+      "description": "加载当前小说的完整上下文信息",
+      "inputSchema": {
+        "type": "object",
+        "required": ["novelId"],
+        "properties": {
+          "novelId": {
+            "type": "string",
+            "description": "小说标识符（工作区路径）"
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "enum": ["world", "characters", "plot", "foreshadows"]
+            },
+            "description": "需要包含的上下文类型",
+            "default": ["world", "characters", "plot", "foreshadows"]
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "worldRules": {
+            "type": "string",
+            "description": "世界观规则"
+          },
+          "characters": {
+            "type": "array",
+            "description": "角色列表"
+          },
+          "plotState": {
+            "type": "string",
+            "description": "剧情状态"
+          },
+          "foreshadows": {
+            "type": "array",
+            "description": "伏笔列表"
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "load_chapter_content",
+      "category": "context",
+      "description": "读取指定章节的内容",
+      "inputSchema": {
+        "type": "object",
+        "required": ["chapterId"],
+        "properties": {
+          "chapterId": {
+            "type": ["string", "number"],
+            "description": "章节标识符（章节号或文件路径）"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "章节内容"
+          },
+          "chapter": {
+            "type": "number",
+            "description": "章节号"
+          },
+          "file": {
+            "type": "string",
+            "description": "文件路径"
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "plan_chapter",
+      "category": "cognitive",
+      "description": "基于上下文，规划本章节的写作结构",
+      "inputSchema": {
+        "type": "object",
+        "required": ["chapterGoal", "contextSummary"],
+        "properties": {
+          "chapterGoal": {
+            "type": "string",
+            "description": "章节目标"
+          },
+          "contextSummary": {
+            "type": "string",
+            "description": "上下文摘要"
+          },
+          "targetChapter": {
+            "type": "number",
+            "description": "目标章节号"
+          },
+          "previousAnalyses": {
+            "type": "array",
+            "description": "前章分析结果"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "outline": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "scene": {
+                  "type": "string",
+                  "description": "场景描述"
+                },
+                "purpose": {
+                  "type": "string",
+                  "description": "场景目的"
+                }
+              }
+            }
+          },
+          "emotion_curve": {
+            "type": "object",
+            "description": "情绪曲线"
+          },
+          "pacing_curve": {
+            "type": "object",
+            "description": "节奏曲线"
+          },
+          "density_curve": {
+            "type": "object",
+            "description": "密度曲线"
+          }
+        }
+      },
+      "sideEffects": [],
+      "note": "此 skill 禁止输出正文，只做导演分镜"
+    },
+    {
+      "name": "reflect_previous_output",
+      "category": "cognitive",
+      "description": "对上一轮生成内容进行自检与反思",
+      "inputSchema": {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "待反思的内容"
+          },
+          "context": {
+            "type": "object",
+            "description": "相关上下文"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "issues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "发现的问题"
+          },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "改进建议"
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "write_chapter",
+      "category": "write",
+      "description": "根据规划生成完整章节内容",
+      "inputSchema": {
+        "type": "object",
+        "required": ["outline", "style", "constraints"],
+        "properties": {
+          "outline": {
+            "type": "array",
+            "description": "章节大纲"
+          },
+          "style": {
+            "type": "object",
+            "description": "写作风格"
+          },
+          "constraints": {
+            "type": "object",
+            "description": "写作约束"
+          },
+          "context": {
+            "type": "object",
+            "description": "上下文信息"
+          },
+          "chapterPlan": {
+            "type": "object",
+            "description": "章节规划（可选）"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "生成的章节内容"
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "rewrite_selected_text",
+      "category": "write",
+      "description": "重写选中文本，不改变原意",
+      "whenToUse": "用户选中文字并要求优化",
+      "inputSchema": {
+        "type": "object",
+        "required": ["text", "rewriteGoal"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "待重写的文本"
+          },
+          "rewriteGoal": {
+            "type": "string",
+            "description": "重写目标"
+          },
+          "context": {
+            "type": "object",
+            "description": "上下文信息"
+          },
+          "intent": {
+            "type": "object",
+            "description": "写作意图"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "rewrittenText": {
+            "type": "string",
+            "description": "重写后的文本"
+          },
+          "changes": {
+            "type": "array",
+            "description": "变更列表"
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "check_character_consistency",
+      "category": "check",
+      "description": "检测人物性格、能力、行为是否一致",
+      "inputSchema": {
+        "type": "object",
+        "required": ["content", "characters"],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "待检查的内容"
+          },
+          "characters": {
+            "type": "array",
+            "description": "角色设定列表"
+          },
+          "context": {
+            "type": "object",
+            "description": "上下文信息"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "violations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "character": {
+                  "type": "string",
+                  "description": "角色名称"
+                },
+                "issue": {
+                  "type": "string",
+                  "description": "问题描述"
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": ["low", "medium", "high", "critical"]
+                }
+              }
+            }
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "check_world_rule_violation",
+      "category": "check",
+      "description": "检测是否违反世界观规则",
+      "inputSchema": {
+        "type": "object",
+        "required": ["content", "worldRules"],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "待检查的内容"
+          },
+          "worldRules": {
+            "type": "object",
+            "description": "世界观规则"
+          },
+          "context": {
+            "type": "object",
+            "description": "上下文信息"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "violations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "违反的规则描述"
+            }
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "save_chapter",
+      "category": "action",
+      "description": "保存章节内容到文件系统",
+      "inputSchema": {
+        "type": "object",
+        "required": ["chapterId", "content"],
+        "properties": {
+          "chapterId": {
+            "type": ["string", "number"],
+            "description": "章节标识符"
+          },
+          "content": {
+            "type": "string",
+            "description": "章节内容"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "文件路径（可选）"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "保存的文件路径"
+          }
+        }
+      },
+      "sideEffects": ["file_write"]
+    },
+    {
+      "name": "finalize_chapter",
+      "category": "action",
+      "description": "整理章节，生成最终可发布版本",
+      "inputSchema": {
+        "type": "object",
+        "required": ["content", "checks"],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "章节内容"
+          },
+          "checks": {
+            "type": "object",
+            "description": "检查结果"
+          },
+          "chapterNumber": {
+            "type": "number",
+            "description": "章节号"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "finalContent": {
+            "type": "string",
+            "description": "最终内容"
+          },
+          "summary": {
+            "type": "string",
+            "description": "摘要"
+          }
+        }
+      },
+      "sideEffects": ["memory_update"]
+    },
+    {
+      "name": "analyze_previous_chapters",
+      "category": "context",
+      "description": "分析已有章节（续写模式需要）",
+      "inputSchema": {
+        "type": "object",
+        "required": ["targetChapter"],
+        "properties": {
+          "targetChapter": {
+            "type": "number",
+            "description": "目标章节号"
+          },
+          "recentCount": {
+            "type": "number",
+            "description": "分析最近N章",
+            "default": 3
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "analyses": {
+            "type": "array",
+            "description": "章节分析结果列表"
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "check_coherence",
+      "category": "check",
+      "description": "检查文本连贯性（情节、情绪连贯性）",
+      "inputSchema": {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "待检查的内容"
+          },
+          "previousAnalyses": {
+            "type": "array",
+            "description": "前章分析结果"
+          },
+          "chapterPlan": {
+            "type": "object",
+            "description": "章节规划"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "overall_coherence": {
+            "type": "string",
+            "enum": ["good", "fair", "poor"]
+          },
+          "overall_score": {
+            "type": "number",
+            "description": "连贯性分数 0-100"
+          },
+          "plot_coherence": {
+            "type": "object",
+            "description": "情节连贯性"
+          },
+          "emotion_coherence": {
+            "type": "object",
+            "description": "情绪连贯性"
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "analyze_curves",
+      "category": "cognitive",
+      "description": "分析节奏、情绪、密度曲线",
+      "inputSchema": {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "待分析的内容"
+          },
+          "chapterPlan": {
+            "type": "object",
+            "description": "章节规划（用于对比）"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "pacingAnalysis": {
+            "type": "object",
+            "description": "节奏分析"
+          },
+          "emotionAnalysis": {
+            "type": "object",
+            "description": "情绪分析"
+          },
+          "densityAnalysis": {
+            "type": "object",
+            "description": "密度分析"
+          },
+          "pacingComparison": {
+            "type": "object",
+            "description": "节奏对比"
+          },
+          "emotionComparison": {
+            "type": "object",
+            "description": "情绪对比"
+          },
+          "densityComparison": {
+            "type": "object",
+            "description": "密度对比"
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "update_memory",
+      "category": "action",
+      "description": "更新记忆系统（角色状态、剧情、伏笔等）",
+      "inputSchema": {
+        "type": "object",
+        "required": ["content", "request"],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "章节内容"
+          },
+          "request": {
+            "type": "object",
+            "description": "用户请求"
+          },
+          "context": {
+            "type": "object",
+            "description": "上下文信息"
+          },
+          "replaceChapter": {
+            "type": "number",
+            "description": "需要替换的章节号（重写模式）"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "updated": {
+            "type": "object",
+            "description": "更新结果"
+          }
+        }
+      },
+      "sideEffects": ["memory_update"]
+    },
+    {
+      "name": "scan_chapters",
+      "category": "context",
+      "description": "扫描章节文件",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "totalChapters": {
+            "type": "number"
+          },
+          "latestChapter": {
+            "type": "number"
+          },
+          "chapterMapping": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": []
+    },
+    {
+      "name": "plan_intent",
+      "category": "cognitive",
+      "description": "规划写作意图（基于章节规划）",
+      "inputSchema": {
+        "type": "object",
+        "required": ["userRequest"],
+        "properties": {
+          "userRequest": {
+            "type": "string",
+            "description": "用户请求"
+          },
+          "context": {
+            "type": "object",
+            "description": "上下文信息"
+          },
+          "chapterPlan": {
+            "type": "object",
+            "description": "章节规划（可选）"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "goal": {
+            "type": "string"
+          },
+          "constraints": {
+            "type": "object"
+          },
+          "writing_guidelines": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": []
+    }
+  ]
+}
+

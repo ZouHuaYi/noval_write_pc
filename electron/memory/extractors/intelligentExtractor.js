@@ -8,7 +8,7 @@ const path = require('path');
 const { callLLM } = require('../llm');
 const { safeParseJSON } = require('../utils/jsonParser');
 const ExtractWriter = require('./extractWriter');
-const FileStateManager = require('./fileStateManager');
+const FileStateManager = require('../managers/fileStateManager');
 
 class IntelligentExtractor {
   constructor(workspaceRoot, memoryManager, llmConfig, vectorIndex = null) {

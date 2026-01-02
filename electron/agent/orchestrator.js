@@ -6,24 +6,26 @@
 const MemoryManager = require('../memory');
 const RuleEngine = require('../rules/ruleEngine'); // 保留旧规则引擎作为兼容
 const DSLRuleEngine = require('../rules/dslRuleEngine'); // 新的 DSL 规则引擎
-const IntentAnalyzer = require('./intentAnalyzer'); // 意图分析器（新增）
-const IntentPlanner = require('./intentPlanner');
-const ConsistencyChecker = require('./consistencyChecker');
-const RewriteAgent = require('./rewriter');
-const MemoryUpdater = require('./memoryUpdater');
-const FileScanner = require('./fileScanner'); // 文件扫描器
-const ChapterAnalyzer = require('./chapterAnalyzer'); // 章节分析器
-const ChapterPlanner = require('./chapterPlanner'); // 章节规划器
-const ChapterFileManager = require('../memory/chapterFileManager'); // 章节文件管理器
-const CoherenceChecker = require('./coherenceChecker'); // 连贯性检查器
-const PacingController = require('./pacingController'); // 节奏控制器
-const EmotionCurveManager = require('./emotionCurveManager'); // 情绪曲线管理器
-const DensityController = require('./densityController'); // 密度控制器
-const SceneStructurePlanner = require('./sceneStructurePlanner'); // 场景结构规划器
-const ContextLoader = require('./contextLoader'); // 智能上下文加载器（新增）
+const IntentAnalyzer = require('./modules/analysis/intentAnalyzer'); // 意图分析器
+const IntentPlanner = require('./modules/planning/intentPlanner');
+const ConsistencyChecker = require('./modules/checking/consistencyChecker');
+const RewriteAgent = require('./modules/writing/rewriter');
+const MemoryUpdater = require('./modules/context/memoryUpdater');
+const FileScanner = require('./modules/context/fileScanner'); // 文件扫描器
+const ChapterAnalyzer = require('./modules/analysis/chapterAnalyzer'); // 章节分析器
+const ChapterPlanner = require('./modules/planning/chapterPlanner'); // 章节规划器
+const ChapterFileManager = require('../memory/managers/chapterFileManager'); // 章节文件管理器
+const CoherenceChecker = require('./modules/checking/coherenceChecker'); // 连贯性检查器
+const PacingController = require('./modules/control/pacingController'); // 节奏控制器
+const EmotionCurveManager = require('./modules/control/emotionCurveManager'); // 情绪曲线管理器
+const DensityController = require('./modules/control/densityController'); // 密度控制器
+const SceneStructurePlanner = require('./modules/planning/sceneStructurePlanner'); // 场景结构规划器
+const ContextLoader = require('./modules/context/contextLoader'); // 智能上下文加载器
 const ErrorHandler = require('./utils/errorHandler'); // 错误处理工具
 const PerformanceOptimizer = require('./utils/performanceOptimizer'); // 性能优化工具
 const ReportGenerator = require('./utils/reportGenerator'); // 报告生成器
+const SkillExecutor = require('./skills/core/skillExecutor'); // Skill 执行器
+const SkillRouter = require('./skills/core/skillRouter'); // Skill 路由器
 const { AgentStates } = require('../memory/types');
 const fs = require('fs').promises;
 const path = require('path');
@@ -52,6 +54,8 @@ class AgentOrchestrator {
     this.densityController = null; // 密度控制器
     this.sceneStructurePlanner = null; // 场景结构规划器
     this.contextLoader = null; // 智能上下文加载器（新增）
+    this.skillExecutor = null; // Skill 执行器（新增）
+    this.skillRouter = null; // Skill 路由器（新增）
     this.currentTask = null;
     this.executionLog = [];
     this.initialized = false;
@@ -108,6 +112,26 @@ class AgentOrchestrator {
       this.memoryUpdater = new MemoryUpdater(this.memory, this.workspaceRoot); // 传入 workspaceRoot
       this.contextLoader = new ContextLoader(this.workspaceRoot, this.fileScanner, this.chapterFileManager, this.memory); // 智能上下文加载器（传入 memory 用于获取设定文件）
 
+      // 初始化 Skill 系统（新增）
+      this.skillRouter = new SkillRouter();
+      this.skillExecutor = new SkillExecutor(this.workspaceRoot, {
+        memory: this.memory,
+        contextLoader: this.contextLoader,
+        chapterFileManager: this.chapterFileManager,
+        chapterPlanner: this.chapterPlanner,
+        rewriter: this.rewriter,
+        consistencyChecker: this.consistencyChecker,
+        intentPlanner: this.intentPlanner,
+        chapterAnalyzer: this.chapterAnalyzer,
+        coherenceChecker: this.coherenceChecker,
+        pacingController: this.pacingController,
+        emotionCurveManager: this.emotionCurveManager,
+        densityController: this.densityController,
+        memoryUpdater: this.memoryUpdater,
+        fileScanner: this.fileScanner,
+        performanceOptimizer: this.performanceOptimizer
+      });
+
       this.initialized = true;
       this.setState(AgentStates.IDLE);
       this.log('Agent initialized', { success: true });
@@ -131,11 +155,483 @@ class AgentOrchestrator {
   }
 
   /**
-   * 执行 Agent 任务
+   * 执行 Agent 任务（使用 Skill 架构）
+   * @param {Object} request - 用户请求
+   * @param {Function} llmCaller - LLM 调用函数
+   * @param {boolean} useSkills - 是否使用 Skill 架构（默认 true）
+   */
+  async execute(request, llmCaller, useSkills = true) {
+    // 如果启用 Skill 架构，使用新的执行流程
+    if (useSkills && this.skillExecutor && this.skillRouter) {
+      return await this.executeWithSkills(request, llmCaller);
+    }
+    
+    // 否则使用原有流程（向后兼容）
+    return await this.executeLegacy(request, llmCaller);
+  }
+
+  /**
+   * 使用 Skill 架构执行任务（新增）
    * @param {Object} request - 用户请求
    * @param {Function} llmCaller - LLM 调用函数
    */
-  async execute(request, llmCaller) {
+  async executeWithSkills(request, llmCaller) {
+    if (!this.initialized) {
+      throw new Error('Agent 未初始化，请先调用 initialize()');
+    }
+
+    const startTime = Date.now();
+    this.statistics.totalTasks++;
+
+    this.currentTask = {
+      id: `task_${Date.now()}`,
+      request: request.userRequest,
+      startedAt: new Date().toISOString(),
+      status: 'running',
+      steps: []
+    };
+
+    this.log('Task started (Skill mode)', { taskId: this.currentTask.id, request: request.userRequest });
+
+    try {
+      // 步骤 1: 分析意图并路由 Skill
+      this.setState(AgentStates.LOAD_CONTEXT);
+      this.addStep('route_skills', '路由 Skill 序列');
+      
+      const routeResult = this.skillRouter.route(request, {
+        workspaceRoot: this.workspaceRoot,
+        targetChapter: request.targetChapter,
+        targetFile: request.targetFile
+      });
+
+      this.log('Skills routed', { 
+        intentType: routeResult.intentType,
+        skillCount: routeResult.skills.length 
+      });
+
+      // 步骤 2: 执行 Skill 序列
+      const skillResults = [];
+      const executionContext = {
+        workspaceRoot: this.workspaceRoot,
+        targetChapter: request.targetChapter,
+        targetFile: request.targetFile,
+        userRequest: request.userRequest
+      };
+
+      for (const skillPlan of routeResult.skills) {
+        this.addStep(`execute_${skillPlan.name}`, `执行 ${skillPlan.name}`);
+        
+        // 检查条件（如果有）
+        if (skillPlan.condition && !this.evaluateCondition(skillPlan.condition, executionContext)) {
+          this.log(`跳过 Skill: ${skillPlan.name} (条件不满足)`);
+          continue;
+        }
+
+        const result = await this.skillExecutor.execute(
+          skillPlan.name,
+          skillPlan.input,
+          { llmCaller, context: executionContext }
+        );
+
+        skillResults.push(result);
+
+        // 如果 Skill 失败且是关键步骤，中断执行
+        if (!result.success && this.isCriticalSkill(skillPlan.name)) {
+          throw new Error(`关键 Skill 执行失败: ${skillPlan.name} - ${result.error}`);
+        }
+
+        // 更新执行上下文（将 Skill 结果传递给下一个 Skill）
+        this.updateExecutionContext(executionContext, skillPlan.name, result.result);
+
+        // 特殊处理：重写循环（如果检查失败，需要重写）
+        // 注意：只在最后一个检查 Skill 后判断，避免重复触发
+        if ((skillPlan.name === 'check_world_rule_violation') && executionContext.content) {
+          const checkResult = this.aggregateCheckResults(skillResults);
+          if (checkResult && checkResult.status === 'fail') {
+            // 检查是否需要重写
+            const maxRewrites = 2;
+            const rewriteCount = executionContext.rewriteCount || 0;
+            
+            if (rewriteCount < maxRewrites) {
+              this.log('检查失败，进入重写循环', { rewriteCount: rewriteCount + 1 });
+              this.addStep('rewrite_loop', `重写循环 (${rewriteCount + 1}/${maxRewrites})`);
+              
+              // 插入重写 Skill
+              const rewriteResult = await this.skillExecutor.execute(
+                'rewrite_selected_text',
+                {
+                  text: executionContext.content,
+                  rewriteGoal: '修正检查发现的错误',
+                  context: executionContext,
+                  intent: executionContext.intent
+                },
+                { llmCaller, context: executionContext }
+              );
+              
+              if (rewriteResult.success) {
+                skillResults.push(rewriteResult);
+                executionContext.content = rewriteResult.result?.rewrittenText || executionContext.content;
+                executionContext.rewriteCount = rewriteCount + 1;
+                
+                // 重新执行检查（插入到当前 Skill 之后）
+                this.log('重新执行检查', { rewriteCount: rewriteCount + 1 });
+                
+                // 重新执行两个检查 Skill
+                const recheckResults = await Promise.all([
+                  this.skillExecutor.execute(
+                    'check_character_consistency',
+                    {
+                      content: executionContext.content,
+                      characters: executionContext.characters || [],
+                      context: executionContext
+                    },
+                    { llmCaller, context: executionContext }
+                  ),
+                  this.skillExecutor.execute(
+                    'check_world_rule_violation',
+                    {
+                      content: executionContext.content,
+                      worldRules: executionContext.worldRules || {},
+                      context: executionContext
+                    },
+                    { llmCaller, context: executionContext }
+                  )
+                ]);
+                
+                skillResults.push(...recheckResults);
+                
+                // 更新检查结果
+                const newCheckResult = this.aggregateCheckResults(recheckResults);
+                if (newCheckResult) {
+                  executionContext.checkResult = newCheckResult;
+                }
+              }
+            } else {
+              this.log('已达到最大重写次数，停止重写循环', { maxRewrites });
+            }
+          }
+        }
+      }
+
+      // 步骤 3: 汇总结果
+      const finalResult = this.aggregateSkillResults(skillResults, routeResult);
+
+      const executionTime = Date.now() - startTime;
+      this.statistics.successfulTasks++;
+      this.updateStatistics(executionTime);
+
+      this.currentTask.status = 'completed';
+      this.currentTask.completedAt = new Date().toISOString();
+      this.currentTask.executionTime = executionTime;
+      this.setState(AgentStates.DONE);
+
+      this.log('Task completed (Skill mode)', { 
+        executionTime: `${(executionTime / 1000).toFixed(2)}s`,
+        skillCount: skillResults.length
+      });
+
+      return {
+        success: true,
+        ...finalResult,
+        executionTime,
+        skillResults,
+        statistics: this.getTaskStatistics()
+      };
+
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      this.statistics.failedTasks++;
+      this.updateStatistics(executionTime);
+
+      this.currentTask.status = 'failed';
+      this.currentTask.error = error.message;
+      this.currentTask.executionTime = executionTime;
+      this.setState(AgentStates.ERROR);
+
+      this.log('Task failed (Skill mode)', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * 判断是否是关键 Skill
+   */
+  isCriticalSkill(skillName) {
+    const criticalSkills = ['write_chapter', 'save_chapter'];
+    return criticalSkills.includes(skillName);
+  }
+
+  /**
+   * 更新执行上下文
+   */
+  updateExecutionContext(context, skillName, result) {
+    switch (skillName) {
+      case 'load_story_context':
+        context.worldRules = result.worldRules;
+        context.characters = result.characters;
+        context.plotState = result.plotState;
+        context.foreshadows = result.foreshadows;
+        break;
+      
+      case 'scan_chapters':
+        context.scanResult = result;
+        break;
+      
+      case 'analyze_previous_chapters':
+        context.previousAnalyses = result.analyses || [];
+        break;
+      
+      case 'load_chapter_content':
+        context.existingContent = result.content;
+        context.chapter = result.chapter;
+        break;
+      
+      case 'plan_chapter':
+        context.outline = result.outline;
+        context.chapterPlan = result;
+        break;
+      
+      case 'plan_intent':
+        context.intent = result;
+        context.constraints = result.constraints;
+        context.style = result.writing_guidelines;
+        break;
+      
+      case 'write_chapter':
+      case 'rewrite_selected_text':
+        context.content = result.content || result.rewrittenText;
+        break;
+      
+      case 'check_coherence':
+        context.coherenceResult = result;
+        break;
+      
+      case 'analyze_curves':
+        context.pacingAnalysis = result.pacingAnalysis;
+        context.emotionAnalysis = result.emotionAnalysis;
+        context.densityAnalysis = result.densityAnalysis;
+        context.pacingComparison = result.pacingComparison;
+        context.emotionComparison = result.emotionComparison;
+        context.densityComparison = result.densityComparison;
+        break;
+      
+      case 'check_character_consistency':
+      case 'check_world_rule_violation':
+        if (!context.checkResult) {
+          context.checkResult = { errors: [], warnings: [] };
+        }
+        if (result.violations) {
+          context.checkResult.errors.push(...result.violations);
+        }
+        break;
+      
+      case 'update_memory':
+        context.memoryUpdated = result.success;
+        break;
+      
+      case 'finalize_chapter':
+        context.finalContent = result.finalContent;
+        break;
+    }
+  }
+
+  /**
+   * 评估条件（用于条件执行）
+   */
+  evaluateCondition(condition, context) {
+    // 简单的条件评估，可以根据需要扩展
+    if (typeof condition === 'function') {
+      return condition(context);
+    }
+    return true;
+  }
+
+  /**
+   * 汇总检查结果
+   */
+  aggregateCheckResults(skillResults) {
+    const checkResults = skillResults.filter(r => 
+      r.skill && (r.skill.includes('check_') || r.skill === 'check_coherence') && r.success
+    );
+    
+    if (checkResults.length === 0) {
+      return null;
+    }
+
+    const allErrors = [];
+    let hasFatal = false;
+    let coherenceScore = 100;
+
+    for (const checkResult of checkResults) {
+      if (checkResult.result) {
+        if (checkResult.result.violations) {
+          allErrors.push(...checkResult.result.violations);
+        }
+        if (checkResult.result.overall_score !== undefined) {
+          coherenceScore = Math.min(coherenceScore, checkResult.result.overall_score);
+        }
+      }
+    }
+
+    // 检查致命错误
+    if (this.dslRuleEngine) {
+      hasFatal = this.dslRuleEngine.hasFatalError(allErrors);
+    }
+
+    return {
+      status: (allErrors.length === 0 && coherenceScore >= 60) ? 'pass' : 'fail',
+      errors: allErrors,
+      overall_score: coherenceScore,
+      hasFatal
+    };
+  }
+
+  /**
+   * 汇总 Skill 结果
+   */
+  aggregateSkillResults(skillResults, routeResult) {
+    const result = {
+      text: '',
+      intent: null,
+      checkResult: null,
+      coherenceResult: null,
+      pacingAnalysis: null,
+      emotionAnalysis: null,
+      densityAnalysis: null,
+      pacingComparison: null,
+      emotionComparison: null,
+      densityComparison: null,
+      chapterPlan: null,
+      rewriteCount: 0,
+      executionLog: this.executionLog.slice(-10)
+    };
+
+    // 提取最终文本
+    for (const skillResult of skillResults.reverse()) {
+      if (skillResult.success && skillResult.result) {
+        if (skillResult.result.content) {
+          result.text = skillResult.result.content;
+          break;
+        } else if (skillResult.result.rewrittenText) {
+          result.text = skillResult.result.rewrittenText;
+          break;
+        }
+      }
+    }
+
+    // 提取各种结果
+    for (const skillResult of skillResults) {
+      if (!skillResult.success || !skillResult.result) continue;
+
+      switch (skillResult.skill) {
+        case 'plan_intent':
+          result.intent = skillResult.result;
+          break;
+        
+        case 'plan_chapter':
+          result.chapterPlan = skillResult.result;
+          break;
+        
+        case 'check_coherence':
+          result.coherenceResult = skillResult.result;
+          break;
+        
+        case 'analyze_curves':
+          result.pacingAnalysis = skillResult.result.pacingAnalysis;
+          result.emotionAnalysis = skillResult.result.emotionAnalysis;
+          result.densityAnalysis = skillResult.result.densityAnalysis;
+          result.pacingComparison = skillResult.result.pacingComparison;
+          result.emotionComparison = skillResult.result.emotionComparison;
+          result.densityComparison = skillResult.result.densityComparison;
+          break;
+        
+        case 'check_character_consistency':
+        case 'check_world_rule_violation':
+          if (!result.checkResult) {
+            result.checkResult = { errors: [], warnings: [] };
+          }
+          if (skillResult.result.violations) {
+            result.checkResult.errors.push(...skillResult.result.violations);
+          }
+          break;
+      }
+    }
+
+    // 汇总检查结果状态
+    if (result.checkResult) {
+      result.checkResult.status = result.checkResult.errors.length === 0 ? 'pass' : 'fail';
+    }
+
+    // 提取重写次数
+    const rewriteResults = skillResults.filter(r => r.skill === 'rewrite_selected_text');
+    result.rewriteCount = rewriteResults.length;
+
+    return result;
+  }
+
+  /**
+   * 原有执行流程（向后兼容）
+   * @deprecated 此方法已废弃，请使用 executeWithSkills 方法（Skill 架构）
+   * 保留此方法仅用于向后兼容和测试
+   * @param {Object} request - 用户请求
+   * @param {Function} llmCaller - LLM 调用函数
+   */
+  async executeLegacy(request, llmCaller) {
+    if (!this.initialized) {
+      throw new Error('Agent 未初始化，请先调用 initialize()');
+    }
+
+    const startTime = Date.now();
+    this.statistics.totalTasks++;
+
+    this.currentTask = {
+      id: `task_${Date.now()}`,
+      request: request.userRequest,
+      startedAt: new Date().toISOString(),
+      status: 'running',
+      steps: []
+    };
+
+    this.log('Task started (Legacy mode)', { taskId: this.currentTask.id, request: request.userRequest });
+
+    try {
+      // 使用错误处理包装执行
+      return await ErrorHandler.withRetry(
+        async () => {
+          return await this.executeInternal(request, llmCaller, startTime);
+        },
+        {
+          maxRetries: 2,
+          retryDelay: 1000,
+          shouldRetry: (error) => ErrorHandler.isRecoverable(error),
+          onRetry: (attempt, error) => {
+            this.log('Retrying task', { attempt, error: error.message });
+          }
+        }
+      );
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      this.statistics.failedTasks++;
+      this.updateStatistics(executionTime);
+
+      const errorInfo = ErrorHandler.handleError(error, {
+        taskId: this.currentTask.id,
+        request: request.userRequest
+      });
+
+      this.currentTask.status = 'failed';
+      this.currentTask.error = errorInfo;
+      this.currentTask.executionTime = executionTime;
+
+      this.log('Task failed (Legacy mode)', errorInfo);
+      throw errorInfo;
+    }
+  }
+
+  /**
+   * 内部执行方法（原有实现，保持不变）
+   */
+  async executeInternal(request, llmCaller, startTime) {
     if (!this.initialized) {
       throw new Error('Agent 未初始化，请先调用 initialize()');
     }
@@ -189,6 +685,8 @@ class AgentOrchestrator {
 
   /**
    * 内部执行方法（实际执行逻辑）
+   * @deprecated 此方法已废弃，请使用 executeWithSkills 方法（Skill 架构）
+   * 保留此方法仅用于向后兼容
    * 新流程：先分析意图，然后根据意图执行不同的流程
    */
   async executeInternal(request, llmCaller, startTime) {
@@ -731,7 +1229,7 @@ class AgentOrchestrator {
   async autoFinalizeChapterIfEnabled(chapterNumber) {
     try {
       // 检查设置：是否启用自动结算
-      const { settings } = require('../database');
+      const { settings } = require('../core/database');
       const autoFinalize = settings.get('autoFinalizeChapter');
       
       // 默认不启用，需要用户手动配置
