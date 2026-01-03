@@ -133,63 +133,59 @@ class CharacterMemory {
   }
 
   /**
-   * 删除角色的状态历史（用于清理无用记忆）
+   * 删除角色指定章节的历史记录（合并方法，支持状态历史和历史记录）
    * @param {string} charIdOrName - 角色ID或名称
-   * @param {number} chapterNumber - 章节号（删除该章节的状态历史）
+   * @param {number} chapterNumber - 章节号
+   * @param {Object} options - 选项 { stateHistory: true, history: true }
+   * @returns {Object} - { stateHistoryRemoved: number, historyRemoved: number }
    */
-  async removeStateHistoryByChapter(charIdOrName, chapterNumber) {
+  async removeHistoryByChapter(charIdOrName, chapterNumber, options = { stateHistory: true, history: true }) {
     const char = this.getCharacter(charIdOrName);
     if (!char) {
-      return false;
+      return { stateHistoryRemoved: 0, historyRemoved: 0 };
     }
 
-    if (!char.state_history) {
-      return false;
+    let stateHistoryRemoved = 0;
+    let historyRemoved = 0;
+    let needsSave = false;
+
+    // 删除状态历史
+    if (options.stateHistory && char.state_history) {
+      const beforeCount = char.state_history.length;
+      char.state_history = char.state_history.filter(h => h.chapter !== chapterNumber);
+      stateHistoryRemoved = beforeCount - char.state_history.length;
+      if (stateHistoryRemoved > 0) {
+        needsSave = true;
+        console.log(`✅ 已删除 ${char.name} 在第${chapterNumber}章的 ${stateHistoryRemoved} 条状态历史`);
+      }
     }
 
-    const beforeCount = char.state_history.length;
-    char.state_history = char.state_history.filter(
-      h => h.chapter !== chapterNumber
-    );
-    const removedCount = beforeCount - char.state_history.length;
+    // 删除历史记录
+    if (options.history && char.history) {
+      const beforeCount = char.history.length;
+      char.history = char.history.filter(h => h.chapter !== chapterNumber);
+      historyRemoved = beforeCount - char.history.length;
+      if (historyRemoved > 0) {
+        needsSave = true;
+        console.log(`✅ 已删除 ${char.name} 在第${chapterNumber}章的 ${historyRemoved} 条历史记录`);
+      }
+    }
 
-    if (removedCount > 0) {
+    if (needsSave) {
       this.data.last_updated = new Date().toISOString();
       await this.save();
-      console.log(`✅ 已删除 ${char.name} 在第${chapterNumber}章的 ${removedCount} 条状态历史`);
     }
 
-    return removedCount > 0;
+    return { stateHistoryRemoved, historyRemoved };
   }
 
   /**
-   * 删除角色的历史记录（用于清理无用记忆）
-   * @param {string} charIdOrName - 角色ID或名称
-   * @param {number} chapterNumber - 章节号（删除该章节的历史记录）
+   * 删除角色的状态历史（兼容性方法，调用合并后的方法）
+   * @deprecated 使用 removeHistoryByChapter 代替
    */
-  async removeHistoryByChapter(charIdOrName, chapterNumber) {
-    const char = this.getCharacter(charIdOrName);
-    if (!char) {
-      return false;
-    }
-
-    if (!char.history) {
-      return false;
-    }
-
-    const beforeCount = char.history.length;
-    char.history = char.history.filter(
-      h => h.chapter !== chapterNumber
-    );
-    const removedCount = beforeCount - char.history.length;
-
-    if (removedCount > 0) {
-      this.data.last_updated = new Date().toISOString();
-      await this.save();
-      console.log(`✅ 已删除 ${char.name} 在第${chapterNumber}章的 ${removedCount} 条历史记录`);
-    }
-
-    return removedCount > 0;
+  async removeStateHistoryByChapter(charIdOrName, chapterNumber) {
+    const result = await this.removeHistoryByChapter(charIdOrName, chapterNumber, { stateHistory: true, history: false });
+    return result.stateHistoryRemoved > 0;
   }
 
   /**
@@ -206,8 +202,10 @@ class CharacterMemory {
 
     // 如果指定了 replaceChapter，先删除该章节的旧状态
     if (options.replaceChapter) {
-      await this.removeStateHistoryByChapter(charIdOrName, options.replaceChapter);
-      await this.removeHistoryByChapter(charIdOrName, options.replaceChapter);
+      await this.removeHistoryByChapter(charIdOrName, options.replaceChapter, { 
+        stateHistory: true, 
+        history: true 
+      });
     }
 
     // 保存旧状态（深拷贝）

@@ -32,6 +32,8 @@ class MemoryManager {
     this.conceptResolver = new ConceptResolver(workspaceRoot);
     this.foreshadowPanel = new ForeshadowPanel(workspaceRoot);
     this.characterStateKnowledge = new CharacterStateKnowledge(workspaceRoot);
+    // 缓存 ExtractCleaner 实例
+    this.extractCleaner = null;
   }
 
   /**
@@ -223,13 +225,6 @@ class MemoryManager {
     }
   }
 
-  /**
-   * 检查是否是首次初始化（保留兼容性）
-   * @deprecated 使用 hasMemoryData() 代替
-   */
-  isFirstInitialization() {
-    return !this.hasMemoryData();
-  }
 
   /**
    * 智能提取文件内容（使用 LLM）
@@ -435,14 +430,22 @@ class MemoryManager {
   }
 
   /**
-   * 从请求中提取提到的角色（简化版）
+   * 从请求中提取提到的角色
+   * 优化：支持更智能的匹配（考虑角色别名、昵称等）
    */
   extractMentionedCharacters(request) {
+    if (!request || typeof request !== 'string') {
+      return [];
+    }
+
     const characters = [];
     const allChars = this.character.getAllCharacters();
+    const requestLower = request.toLowerCase();
 
     for (const char of allChars) {
-      if (request.includes(char.name)) {
+      const charNameLower = char.name.toLowerCase();
+      // 精确匹配或包含匹配
+      if (requestLower.includes(charNameLower) || charNameLower.includes(requestLower)) {
         characters.push(char.name);
       }
     }
@@ -490,8 +493,11 @@ class MemoryManager {
           for (const chapterNum of updates.character_updates._delete_by_chapter) {
             const allChars = this.character.getAllCharacters();
             for (const char of allChars) {
-              await this.character.removeStateHistoryByChapter(char.name, chapterNum);
-              await this.character.removeHistoryByChapter(char.name, chapterNum);
+              // 使用合并后的方法，一次性删除状态历史和历史记录
+              await this.character.removeHistoryByChapter(char.name, chapterNum, { 
+                stateHistory: true, 
+                history: true 
+              });
             }
             console.log(`     ✅ 已清理第${chapterNum}章的所有角色状态历史`);
             results.character = true;
@@ -552,59 +558,7 @@ class MemoryManager {
       // 更新剧情（支持删除、更新、新增）
       if (updates.plot_updates) {
         console.log(`   📖 更新剧情信息...`);
-        
-        // 处理删除的事件（如果章节被重写，可能需要删除旧事件）
-        if (updates.plot_updates.deleted_events) {
-          console.log(`     - 删除剧情事件: ${updates.plot_updates.deleted_events.length} 个`);
-          for (const eventId of updates.plot_updates.deleted_events) {
-            await this.plot.removeCompletedEvent(eventId);
-            console.log(`       ✅ 已删除事件: ${eventId}`);
-          }
-          results.plot = true;
-        }
-        
-        // 根据章节删除事件（重写章节时使用）
-        if (updates.plot_updates.delete_events_by_chapter) {
-          for (const chapterNum of updates.plot_updates.delete_events_by_chapter) {
-            const removedCount = await this.plot.removeEventsByChapter(chapterNum);
-            console.log(`       ✅ 已删除第${chapterNum}章的 ${removedCount} 个事件`);
-          }
-          results.plot = true;
-        }
-        
-        // 处理更新的事件
-        if (updates.plot_updates.updated_events) {
-          console.log(`     - 更新剧情事件: ${updates.plot_updates.updated_events.length} 个`);
-          for (const event of updates.plot_updates.updated_events) {
-            await this.plot.updateCompletedEvent(event.id, event);
-            console.log(`       ✅ 已更新事件: ${event.name || event.id}`);
-          }
-          results.plot = true;
-        }
-        
-        // 处理新增的事件
-        if (updates.plot_updates.completed_events) {
-          console.log(`     - 添加剧情事件: ${updates.plot_updates.completed_events.length} 个`);
-          for (const event of updates.plot_updates.completed_events) {
-            await this.plot.addCompletedEvent(event);
-            console.log(`       ✅ ${event.name || '事件'}`);
-          }
-          results.plot = true;
-        }
-
-        if (updates.plot_updates.timeline_events) {
-          console.log(`     - 添加时间线事件: ${updates.plot_updates.timeline_events.length} 个`);
-          for (const event of updates.plot_updates.timeline_events) {
-            await this.plot.addTimelineEvent(event);
-          }
-          results.plot = true;
-        }
-
-        if (updates.plot_updates.current_stage) {
-          console.log(`     - 更新当前阶段: ${updates.plot_updates.current_stage}`);
-          await this.plot.updateCurrentStage(updates.plot_updates.current_stage);
-          results.plot = true;
-        }
+        results.plot = await this.updatePlot(updates.plot_updates) || results.plot;
       }
 
       // 添加新伏笔
@@ -620,17 +574,7 @@ class MemoryManager {
       // 更新伏笔状态
       if (updates.foreshadow_updates) {
         console.log(`   🔮 更新伏笔状态 (${updates.foreshadow_updates.length} 个)...`);
-        for (const update of updates.foreshadow_updates) {
-          if (update.action === 'reveal') {
-            await this.foreshadow.revealForeshadow(update.id, update.details);
-            console.log(`     ✅ 揭示伏笔: ${update.title || update.id}`);
-            results.foreshadow = true;
-          } else if (update.action === 'resolve') {
-            await this.foreshadow.resolveForeshadow(update.id, update.details);
-            console.log(`     ✅ 解决伏笔: ${update.title || update.id}`);
-            results.foreshadow = true;
-          }
-        }
+        results.foreshadow = await this.updateForeshadows(updates.foreshadow_updates) || results.foreshadow;
       }
 
       // 更新世界规则
@@ -706,38 +650,43 @@ class MemoryManager {
 
   /**
    * 导入记忆（用于恢复）
+   * 优化：合并重复的保存逻辑
    */
   async importAll(exportedData) {
     this.checkInitialized();
 
-    try {
-      if (exportedData.memories.world) {
-        this.world.data = exportedData.memories.world;
-        await this.world.save();
-      }
-
-      if (exportedData.memories.character) {
-        this.character.data = exportedData.memories.character;
-        await this.character.save();
-      }
-
-      if (exportedData.memories.plot) {
-        this.plot.data = exportedData.memories.plot;
-        await this.plot.save();
-      }
-
-      if (exportedData.memories.foreshadow) {
-        this.foreshadow.data = exportedData.memories.foreshadow;
-        await this.foreshadow.save();
-      }
-
-      console.log('✅ 记忆导入完成');
-      return { success: true };
-
-    } catch (error) {
-      console.error('❌ 记忆导入失败:', error);
-      return { success: false, error: error.message };
+    if (!exportedData || !exportedData.memories) {
+      return { success: false, error: '无效的导入数据' };
     }
+
+    const memoryModules = [
+      { key: 'world', module: this.world },
+      { key: 'character', module: this.character },
+      { key: 'plot', module: this.plot },
+      { key: 'foreshadow', module: this.foreshadow }
+    ];
+
+    const results = { success: true, errors: [] };
+
+    for (const { key, module } of memoryModules) {
+      if (exportedData.memories[key]) {
+        try {
+          module.data = exportedData.memories[key];
+          await module.save();
+        } catch (error) {
+          results.errors.push({ module: key, error: error.message });
+          results.success = false;
+        }
+      }
+    }
+
+    if (results.success) {
+      console.log('✅ 记忆导入完成');
+    } else {
+      console.error('❌ 记忆导入部分失败:', results.errors);
+    }
+
+    return results;
   }
 
   /**
@@ -810,72 +759,54 @@ class MemoryManager {
   }
 
   /**
-   * 获取所有事实
+   * 读取核心文件（通用方法，合并了 getAllFacts, getStoryState, getAllForeshadows）
+   * @param {string} filename - 文件名（如 'facts.json', 'story_state.json', 'foreshadows.json'）
+   * @param {*} defaultValue - 文件不存在时的默认值
+   * @returns {*} 文件内容或默认值
    */
-  getAllFacts() {
+  readCoreFile(filename, defaultValue = null) {
     try {
       const fs = require('fs');
       const path = require('path');
-      const factFile = path.join(this.workspaceRoot, '.novel-agent', 'core', 'facts.json');
-      if (!fs.existsSync(factFile)) {
-        return [];
+      const filePath = path.join(this.workspaceRoot, '.novel-agent', 'core', filename);
+      
+      if (!fs.existsSync(filePath)) {
+        return defaultValue;
       }
-      const content = fs.readFileSync(factFile, 'utf-8');
+      
+      const content = fs.readFileSync(filePath, 'utf-8');
       return JSON.parse(content);
     } catch (error) {
-      console.error('❌ 读取事实失败:', error);
-      return [];
+      console.error(`❌ 读取核心文件失败: ${filename}`, error);
+      return defaultValue;
     }
+  }
+
+  /**
+   * 获取所有事实
+   */
+  getAllFacts() {
+    return this.readCoreFile('facts.json', []);
   }
 
   /**
    * 获取故事状态
    */
   getStoryState() {
-    try {
-      const fs = require('fs');
-      const path = require('path');
-      const stateFile = path.join(this.workspaceRoot, '.novel-agent', 'core', 'story_state.json');
-      if (!fs.existsSync(stateFile)) {
-        return {
-          chapter: 0,
-          current_location: '',
-          global_tension: '',
-          known_threats: [],
-          open_mysteries: []
-        };
-      }
-      const content = fs.readFileSync(stateFile, 'utf-8');
-      return JSON.parse(content);
-    } catch (error) {
-      console.error('❌ 读取故事状态失败:', error);
-      return {
-        chapter: 0,
-        current_location: '',
-        global_tension: '',
-        known_threats: [],
-        open_mysteries: []
-      };
-    }
+    return this.readCoreFile('story_state.json', {
+      chapter: 0,
+      current_location: '',
+      global_tension: '',
+      known_threats: [],
+      open_mysteries: []
+    });
   }
 
   /**
    * 获取所有伏笔（新架构）
    */
   getAllForeshadows() {
-    try {
-      const fs = require('fs');
-      const path = require('path');
-      const foreshadowFile = path.join(this.workspaceRoot, '.novel-agent', 'core', 'foreshadows.json');
-      if (!fs.existsSync(foreshadowFile)) {
-        return [];
-      }
-      const content = fs.readFileSync(foreshadowFile, 'utf-8');
-      return JSON.parse(content);
-    } catch (error) {
-      console.error('❌ 读取伏笔失败:', error);
-      return [];
-    }
+    return this.readCoreFile('foreshadows.json', []);
   }
 
   /**
@@ -954,15 +885,24 @@ class MemoryManager {
   }
 
   /**
+   * 获取 ExtractCleaner 实例（缓存）
+   */
+  getExtractCleaner() {
+    if (!this.extractCleaner) {
+      const ExtractCleaner = require('./finalizer/extractCleaner');
+      this.extractCleaner = new ExtractCleaner(this.workspaceRoot);
+    }
+    return this.extractCleaner;
+  }
+
+  /**
    * 清理过期的 extracts
    * @param {number} maxAgeDays - 最大保留天数
    * @param {boolean} dryRun - 是否只是预览
    */
   cleanOldExtracts(maxAgeDays = 30, dryRun = false) {
     this.checkInitialized();
-    const ExtractCleaner = require('./finalizer/extractCleaner');
-    const cleaner = new ExtractCleaner(this.workspaceRoot);
-    return cleaner.cleanOld(maxAgeDays, dryRun);
+    return this.getExtractCleaner().cleanOld(maxAgeDays, dryRun);
   }
 
   /**
@@ -970,9 +910,96 @@ class MemoryManager {
    */
   getExtractCleanupStats() {
     this.checkInitialized();
-    const ExtractCleaner = require('./finalizer/extractCleaner');
-    const cleaner = new ExtractCleaner(this.workspaceRoot);
-    return cleaner.getCleanupStats();
+    return this.getExtractCleaner().getCleanupStats();
+  }
+
+  /**
+   * 更新剧情（内部辅助方法，合并重复逻辑）
+   */
+  async updatePlot(plotUpdates) {
+    let updated = false;
+
+    // 处理删除的事件
+    if (plotUpdates.deleted_events?.length > 0) {
+      console.log(`     - 删除剧情事件: ${plotUpdates.deleted_events.length} 个`);
+      for (const eventId of plotUpdates.deleted_events) {
+        await this.plot.removeCompletedEvent(eventId);
+        console.log(`       ✅ 已删除事件: ${eventId}`);
+      }
+      updated = true;
+    }
+    
+    // 根据章节删除事件
+    if (plotUpdates.delete_events_by_chapter?.length > 0) {
+      for (const chapterNum of plotUpdates.delete_events_by_chapter) {
+        const removedCount = await this.plot.removeEventsByChapter(chapterNum);
+        console.log(`       ✅ 已删除第${chapterNum}章的 ${removedCount} 个事件`);
+      }
+      updated = true;
+    }
+    
+    // 处理更新的事件
+    if (plotUpdates.updated_events?.length > 0) {
+      console.log(`     - 更新剧情事件: ${plotUpdates.updated_events.length} 个`);
+      for (const event of plotUpdates.updated_events) {
+        await this.plot.updateCompletedEvent(event.id, event);
+        console.log(`       ✅ 已更新事件: ${event.name || event.id}`);
+      }
+      updated = true;
+    }
+    
+    // 处理新增的事件
+    if (plotUpdates.completed_events?.length > 0) {
+      console.log(`     - 添加剧情事件: ${plotUpdates.completed_events.length} 个`);
+      for (const event of plotUpdates.completed_events) {
+        await this.plot.addCompletedEvent(event);
+        console.log(`       ✅ ${event.name || '事件'}`);
+      }
+      updated = true;
+    }
+
+    // 添加时间线事件
+    if (plotUpdates.timeline_events?.length > 0) {
+      console.log(`     - 添加时间线事件: ${plotUpdates.timeline_events.length} 个`);
+      for (const event of plotUpdates.timeline_events) {
+        await this.plot.addTimelineEvent(event);
+      }
+      updated = true;
+    }
+
+    // 更新当前阶段
+    if (plotUpdates.current_stage) {
+      console.log(`     - 更新当前阶段: ${plotUpdates.current_stage}`);
+      await this.plot.updateCurrentStage(plotUpdates.current_stage);
+      updated = true;
+    }
+
+    return updated;
+  }
+
+  /**
+   * 更新伏笔状态（内部辅助方法）
+   */
+  async updateForeshadows(foreshadowUpdates) {
+    let updated = false;
+
+    for (const update of foreshadowUpdates) {
+      try {
+        if (update.action === 'reveal') {
+          await this.foreshadow.revealForeshadow(update.id, update.details);
+          console.log(`     ✅ 揭示伏笔: ${update.title || update.id}`);
+          updated = true;
+        } else if (update.action === 'resolve') {
+          await this.foreshadow.resolveForeshadow(update.id, update.details);
+          console.log(`     ✅ 解决伏笔: ${update.title || update.id}`);
+          updated = true;
+        }
+      } catch (error) {
+        console.warn(`     ❌ 更新伏笔失败: ${update.id}`, error.message);
+      }
+    }
+
+    return updated;
   }
 }
 

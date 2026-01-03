@@ -622,15 +622,6 @@ ${limitedContent}
     }
   }
 
-  /**
-   * 从章节提取的信息更新记忆系统（已废弃）
-   * 现在改为写入 ChapterExtract，由 ChapterFinalizer 统一结算
-   * @deprecated 使用 extractFromChapter 写入 ChapterExtract
-   */
-  async updateMemoryFromChapter(extracted, chapterNumber) {
-    // 此方法已废弃，保留用于兼容性
-    console.log('⚠️ updateMemoryFromChapter 已废弃，请使用 ChapterExtract + ChapterFinalizer');
-  }
 }
 
 module.exports = IntelligentExtractor;
