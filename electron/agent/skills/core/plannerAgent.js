@@ -10,7 +10,10 @@ const logger = require('../../../utils/logger');
 class PlannerAgent {
   constructor() {
     this.definitions = skillDefinitions.skills;
-    this.availableSkills = this.definitions.map(s => s.name);
+    // 排除 update_story_memory，因为它是用户确认后的手动操作，不应该由 Planner 自动规划
+    this.availableSkills = this.definitions
+      .map(s => s.name)
+      .filter(name => name !== 'update_story_memory');
     this.skillExecutionCounts = new Map(); // 跟踪每个 Skill 的执行次数
     this.maxExecutionsPerSkill = 3; // 每个 Skill 最多执行 3 次
   }

@@ -406,6 +406,14 @@ ${content.substring(0, 2000)}${content.length > 2000 ? '...' : ''}
       coherenceScore: coherenceResult.coherenceScore || 100
     };
   }
+
+  /**
+   * check_chapter (合并版) - 合并了所有检查 Skill
+   */
+  async checkChapterMerged(input, options = {}) {
+    // 直接使用 checkAll 的实现
+    return await this.checkAll(input, options);
+  }
 }
 
 module.exports = CheckSkills;

@@ -172,7 +172,8 @@ class ActionSkills {
 
       return {
         success: result.success !== false,
-        updated: result.updated || {}
+        memoryUpdated: result.success !== false, // 用于 Planner 规划的状态
+        updated: result.updated || {} // 仅用于日志和调试
       };
     } catch (error) {
       console.error('更新记忆失败:', error);
@@ -182,6 +183,18 @@ class ActionSkills {
         updated: {}
       };
     }
+  }
+
+  /**
+   * update_story_memory (合并版) - 合并了 update_memory
+   */
+  async updateStoryMemoryMerged(input, options = {}) {
+    const result = await this.updateMemory(input, options);
+    // 确保返回 memoryUpdated 字段（用于 Planner 规划）
+    return {
+      ...result,
+      memoryUpdated: result.success !== false
+    };
   }
 }
 

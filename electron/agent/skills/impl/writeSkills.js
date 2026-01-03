@@ -298,6 +298,56 @@ ${JSON.stringify({
       throw new Error(`Rewrite failed: ${error.message}`);
     }
   }
+
+  /**
+   * rewrite_chapter (合并版) - 合并了 rewrite_with_plan, rewrite_selected_text
+   */
+  async rewriteChapterMerged(input, options = {}) {
+    const { content, rewritePlan, chapterIntent, context, selectedText } = input;
+    
+    const llmCaller = options.llmCaller || this.llmCaller;
+    if (!llmCaller) {
+      throw new Error('LLM caller not available');
+    }
+
+    // 如果有选中文本，优先重写选中部分
+    if (selectedText && selectedText.trim()) {
+      const rewriteResult = await this.rewriteSelectedText({
+        text: selectedText,
+        rewriteGoal: rewritePlan || '优化文本',
+        context,
+        intent: chapterIntent
+      }, options);
+      
+      // 替换原内容中的选中文本
+      const newContent = content.replace(selectedText, rewriteResult.rewrittenText);
+      return {
+        content: newContent,
+        changes: rewriteResult.changes || []
+      };
+    }
+
+    // 否则使用 rewrite_with_plan（如果有 rewritePlan）
+    if (rewritePlan && rewritePlan.trim()) {
+      const rewriteResult = await this.rewriteWithPlan({
+        content,
+        rewritePlan,
+        context,
+        intent: chapterIntent
+      }, options);
+      
+      return {
+        content: rewriteResult.rewrittenContent || content,
+        changes: rewriteResult.changes || []
+      };
+    }
+
+    // 如果没有 rewritePlan，直接返回原内容
+    return {
+      content,
+      changes: []
+    };
+  }
 }
 
 module.exports = WriteSkills;

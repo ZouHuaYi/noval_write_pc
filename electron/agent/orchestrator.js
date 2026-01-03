@@ -412,8 +412,7 @@ class AgentOrchestrator {
       Object.assign(new AgentStateClass(), savedState);
 
     // 如果用户修改了大纲，更新 AgentState
-    if (userModifiedOutline && agentState.chapterPlan) {
-      agentState.chapterPlan.outline = userModifiedOutline;
+    if (userModifiedOutline) {
       agentState.outline = userModifiedOutline;
     }
 
@@ -731,11 +730,11 @@ class AgentOrchestrator {
   aggregateSkillResultsFromState(skillResults, agentState) {
     return {
       text: agentState.getContent(),
-      intent: agentState.intent,
-      checkResult: agentState.checkResults.overall || agentState.checkResults,
-      coherenceResult: agentState.checkResults.coherence,
-      chapterPlan: agentState.chapterPlan,
-      rewriteCount: skillResults.filter(r => r.skill === 'rewrite_selected_text' || r.skill === 'rewrite_with_plan').length,
+      intent: agentState.chapterIntent,
+      checkResult: agentState.checkResults,
+      coherenceResult: agentState.checkResults?.coherenceIssues || null,
+      chapterPlan: agentState.outline ? { outline: agentState.outline } : null,
+      rewriteCount: skillResults.filter(r => r.skill === 'rewrite_chapter').length,
       executionLog: this.executionLog.slice(-10)
     };
   }

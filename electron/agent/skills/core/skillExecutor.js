@@ -32,38 +32,31 @@ class SkillExecutor {
   }
 
   /**
-   * 构建 Skill 映射
+   * 构建 Skill 映射（精简版：9 个核心 Skill）
    */
   buildSkillMap() {
-    // Context Skills
+    // Context Skills (2 个)
     this.skillMap.set('load_story_context', this.contextSkills.loadStoryContext.bind(this.contextSkills));
-    this.skillMap.set('load_chapter_content', this.contextSkills.loadChapterContent.bind(this.contextSkills));
-    this.skillMap.set('analyze_previous_chapters', this.contextSkills.analyzePreviousChapters.bind(this.contextSkills));
     this.skillMap.set('scan_chapters', this.contextSkills.scanChapters.bind(this.contextSkills));
     
-    // Cognitive Skills
-    this.skillMap.set('plan_chapter', this.cognitiveSkills.planChapter.bind(this.cognitiveSkills));
-    this.skillMap.set('plan_chapter_outline', this.cognitiveSkills.planChapterOutline.bind(this.cognitiveSkills));
-    this.skillMap.set('reflect_previous_output', this.cognitiveSkills.reflectPreviousOutput.bind(this.cognitiveSkills));
-    this.skillMap.set('plan_intent', this.cognitiveSkills.planIntent.bind(this.cognitiveSkills));
-    this.skillMap.set('analyze_curves', this.cognitiveSkills.analyzeCurves.bind(this.cognitiveSkills));
+    // Cognitive Skills (2 个)
+    // plan_chapter 合并了 plan_intent, plan_chapter_outline, analyze_previous_chapters
+    this.skillMap.set('plan_chapter', this.cognitiveSkills.planChapterMerged.bind(this.cognitiveSkills));
     this.skillMap.set('generate_rewrite_plan', this.cognitiveSkills.generateRewritePlan.bind(this.cognitiveSkills));
     
-    // Write Skills
+    // Write Skills (2 个)
     this.skillMap.set('write_chapter', this.writeSkills.writeChapter.bind(this.writeSkills));
-    this.skillMap.set('rewrite_selected_text', this.writeSkills.rewriteSelectedText.bind(this.writeSkills));
-    this.skillMap.set('rewrite_with_plan', this.writeSkills.rewriteWithPlan.bind(this.writeSkills));
+    // rewrite_chapter 合并了 rewrite_with_plan, rewrite_selected_text
+    this.skillMap.set('rewrite_chapter', this.writeSkills.rewriteChapterMerged.bind(this.writeSkills));
     
-    // Check Skills
-    this.skillMap.set('check_character_consistency', this.checkSkills.checkCharacterConsistency.bind(this.checkSkills));
-    this.skillMap.set('check_world_rule_violation', this.checkSkills.checkWorldRuleViolation.bind(this.checkSkills));
-    this.skillMap.set('check_coherence', this.checkSkills.checkCoherence.bind(this.checkSkills));
-    this.skillMap.set('check_all', this.checkSkills.checkAll.bind(this.checkSkills));
-    
-    // Action Skills
-    this.skillMap.set('save_chapter', this.actionSkills.saveChapter.bind(this.actionSkills));
+    // Check Skills (2 个)
+    // check_chapter 合并了 check_character_consistency, check_world_rule_violation, check_coherence, check_all
+    this.skillMap.set('check_chapter', this.checkSkills.checkChapterMerged.bind(this.checkSkills));
     this.skillMap.set('finalize_chapter', this.actionSkills.finalizeChapter.bind(this.actionSkills));
-    this.skillMap.set('update_memory', this.actionSkills.updateMemory.bind(this.actionSkills));
+    
+    // Action Skills (1 个)
+    // update_story_memory 合并了 update_memory
+    this.skillMap.set('update_story_memory', this.actionSkills.updateStoryMemoryMerged.bind(this.actionSkills));
   }
 
   /**

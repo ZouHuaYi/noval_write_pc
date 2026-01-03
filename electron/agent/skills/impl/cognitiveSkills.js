@@ -526,6 +526,126 @@ ${JSON.stringify(checkResult, null, 2)}
       densityComparison
     };
   }
+
+  /**
+   * plan_chapter (合并版) - 合并了 plan_intent, plan_chapter_outline, analyze_previous_chapters
+   */
+  async planChapterMerged(input, options = {}) {
+    const { targetChapter, userRequest, worldRules, characters, plotState, recentCount = 3 } = input;
+    
+    const llmCaller = options.llmCaller || this.llmCaller;
+    if (!llmCaller) {
+      throw new Error('LLM caller not available');
+    }
+
+    // 1. 分析前章（如果需要）
+    const fileScanner = this.dependencies?.fileScanner;
+    const chapterAnalyzer = this.dependencies?.chapterAnalyzer;
+    const chapterFileManager = this.dependencies?.chapterFileManager;
+    const performanceOptimizer = this.dependencies?.performanceOptimizer;
+    let previousAnalyses = [];
+
+    if (targetChapter > 1 && fileScanner && chapterAnalyzer) {
+      try {
+        // 获取最近 N 章
+        const startChapter = Math.max(1, targetChapter - recentCount);
+        const chapterNumbers = [];
+        
+        for (let i = startChapter; i < targetChapter; i++) {
+          if (fileScanner.hasChapter && fileScanner.hasChapter(i)) {
+            chapterNumbers.push(i);
+          }
+        }
+
+        if (chapterNumbers.length > 0) {
+          const llmCallerForAnalysis = options.llmCaller || this.llmCaller;
+          const analysisTasks = chapterNumbers.map(chapterNum => async () => {
+            let needsUpdate = true;
+            if (chapterFileManager && chapterFileManager.needsAnalysisUpdate) {
+              needsUpdate = await chapterFileManager.needsAnalysisUpdate(chapterNum);
+            }
+            
+            if (!needsUpdate && chapterFileManager) {
+              const cached = await chapterFileManager.loadAnalysis(chapterNum);
+              if (cached) return cached;
+            }
+
+            const content = await fileScanner.readChapterContent(chapterNum);
+            if (content && llmCallerForAnalysis) {
+              const analysis = await chapterAnalyzer.analyzeChapter(chapterNum, content, llmCallerForAnalysis);
+              if (analysis && analysis.success) {
+                if (chapterFileManager && chapterFileManager.saveAnalysis) {
+                  await chapterFileManager.saveAnalysis(chapterNum, analysis);
+                }
+                return analysis;
+              }
+            }
+            return null;
+          });
+
+          let analyses;
+          if (performanceOptimizer && performanceOptimizer.parallel) {
+            analyses = await performanceOptimizer.parallel(analysisTasks, { maxConcurrency: 2 });
+          } else {
+            analyses = [];
+            for (const task of analysisTasks) {
+              const result = await task();
+              if (result) analyses.push(result);
+            }
+          }
+
+          previousAnalyses = analyses.filter(a => a !== null).sort((a, b) => 
+            (a.chapterNumber || 0) - (b.chapterNumber || 0)
+          );
+        }
+      } catch (error) {
+        console.warn('分析前章失败，继续规划:', error.message);
+      }
+    }
+
+    // 2. 规划章节大纲
+    const outlineResult = await this.planChapterOutline({
+      chapterGoal: userRequest || '续写新章节',
+      contextSummary: this.buildContextSummary(worldRules, characters, plotState, previousAnalyses),
+      targetChapter: targetChapter || 1,
+      previousAnalyses
+    }, options);
+
+    // 3. 规划写作意图
+    const intentResult = await this.planIntent({
+      userRequest: userRequest || '续写新章节',
+      context: {
+        worldRules,
+        characters,
+        plotState
+      },
+      chapterPlan: outlineResult
+    }, options);
+
+    // 合并结果
+    return {
+      outline: outlineResult.outline,
+      chapterIntent: intentResult, // 包含 goal, constraints, writing_guidelines
+      previousAnalyses,
+      scenes: outlineResult.scenes || [],
+      requiresUserConfirmation: outlineResult.requiresUserConfirmation !== false
+    };
+  }
+
+  /**
+   * 构建上下文摘要（辅助方法）
+   */
+  buildContextSummary(worldRules, characters, plotState, previousAnalyses) {
+    const parts = [];
+    if (previousAnalyses && previousAnalyses.length > 0) {
+      parts.push(`已分析 ${previousAnalyses.length} 章`);
+    }
+    if (worldRules) parts.push('已加载世界观');
+    if (characters && characters.length > 0) {
+      parts.push(`已加载 ${characters.length} 个角色`);
+    }
+    return parts.join('；') || '无上下文';
+  }
 }
 
 module.exports = CognitiveSkills;

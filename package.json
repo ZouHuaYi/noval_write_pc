@@ -17,7 +17,10 @@
     "dist:win": "npm run build && electron-builder --win",
     "dist:win:skip-clean": "npm run build && electron-builder --win",
     "dist:win:clean": "npm run clean:force && timeout /t 3 /nobreak >nul && npm run build && electron-builder --win",
-    "dist:mac": "npm run build && electron-builder --mac"
+    "dist:mac": "npm run build && electron-builder --mac",
+    "test": "node electron/agent/tests/runTests.js",
+    "test:quick": "node electron/agent/tests/runTests.js --quick",
+    "test:verbose": "node electron/agent/tests/runTests.js --verbose"
   },
   "build": {
     "appId": "com.novelide.app",

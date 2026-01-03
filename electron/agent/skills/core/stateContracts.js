@@ -1,76 +1,62 @@
 /**
- * State Contracts - 状态契约定义
- * 定义每个 Skill 的 requiresState（需要的状态）和 producesState（产生的状态）
+ * State Contracts - 状态契约定义（精简版）
+ * 只保留 8 个核心 Skill（用于 Planner 自动规划），提升 Planner 效率
+ * 
+ * 注意：update_story_memory 不在 STATE_CONTRACTS 中
+ * - 它是用户确认后的手动操作，不应该由 Planner 自动规划
+ * - 它仍然存在于 skillDefinitions.json 中，可以通过 SkillExecutor 手动调用
+ * - 这样可以避免状态依赖循环，因为 Planner 不会考虑它
  */
 
 const STATE_CONTRACTS = {
+  // ========== Context (1 个) ==========
+  
   load_story_context: {
     requiresState: [],
     producesState: ['worldRules', 'characters', 'plotState', 'foreshadows']
   },
-  scan_chapters: {
-    requiresState: [],
-    producesState: ['scanResult']
+
+  // ========== Planning / Cognitive (2 个) ==========
+  
+  plan_chapter: {
+    requiresState: ['worldRules', 'characters', 'plotState'],
+    producesState: ['outline', 'chapterIntent', 'previousAnalyses']
   },
-  analyze_previous_chapters: {
-    requiresState: ['scanResult'],
-    producesState: ['previousAnalyses']
-  },
-  load_chapter_content: {
-    requiresState: [],
-    producesState: ['chapterDraft', 'targetChapter']
-  },
-  plan_chapter_outline: {
-    requiresState: ['worldRules', 'characters', 'previousAnalyses'],
-    producesState: ['outline', 'chapterPlan']
-  },
-  plan_intent: {
-    requiresState: ['chapterPlan'],
-    producesState: ['intent']
-  },
-  write_chapter: {
-    requiresState: ['outline', 'intent', 'worldRules', 'characters'],
-    producesState: ['chapterDraft']
-  },
-  rewrite_selected_text: {
-    requiresState: ['worldRules', 'characters'],
-    producesState: ['rewrittenContent']
-  },
-  check_character_consistency: {
-    requiresState: ['chapterDraft', 'characters'],
-    producesState: ['checkResults.character']
-  },
-  check_world_rule_violation: {
-    requiresState: ['chapterDraft', 'worldRules'],
-    producesState: ['checkResults.world']
-  },
-  check_coherence: {
-    requiresState: ['chapterDraft', 'previousAnalyses'],
-    producesState: ['checkResults.coherence']
-  },
-  check_all: {
-    requiresState: ['chapterDraft', 'characters', 'worldRules'],
-    producesState: ['checkResults.overall']
-  },
+
   generate_rewrite_plan: {
-    requiresState: ['chapterDraft', 'checkResults.overall'],
+    requiresState: ['checkResults'],
     producesState: ['rewritePlan']
   },
-  rewrite_with_plan: {
-    requiresState: ['chapterDraft', 'rewritePlan', 'intent'],
-    producesState: ['rewrittenContent']
+
+  // ========== Writing (2 个) ==========
+  
+  write_chapter: {
+    requiresState: ['outline', 'chapterIntent', 'worldRules', 'characters'],
+    producesState: ['chapters.draft']
   },
+
+  rewrite_chapter: {
+    requiresState: ['chapters.draft', 'rewritePlan'],
+    producesState: ['chapters.draft'] // 更新草稿
+  },
+
+  // ========== Check / Validation (2 个) ==========
+  
+  check_chapter: {
+    requiresState: ['chapters.draft', 'characters', 'worldRules'],
+    producesState: ['checkResults']
+  },
+
   finalize_chapter: {
-    requiresState: ['chapterDraft', 'checkResults.overall'],
-    producesState: ['finalContent']
+    requiresState: ['chapters.draft', 'checkResults'],
+    producesState: ['chapters.final']
   },
-  save_chapter: {
-    requiresState: ['finalContent', 'targetChapter'],
-    producesState: ['saved']
-  },
-  update_memory: {
-    requiresState: ['finalContent'],
-    producesState: ['memoryUpdated']
+
+  // ========== Utility (1 个) ==========
+  
+  scan_chapters: {
+    requiresState: [],
+    producesState: ['scanResult', 'targetChapter']
   }
 };
 
@@ -78,10 +64,10 @@ const STATE_CONTRACTS = {
  * Goal State 映射（Intent → 目标状态）
  */
 const GOAL_STATES = {
-  CREATE: ['finalContent'],
-  CONTINUE: ['finalContent'],
-  REWRITE: ['finalContent'],
-  CHECK: ['checkResults.overall'],
+  CREATE: ['chapters.final'],
+  CONTINUE: ['chapters.final'],
+  REWRITE: ['chapters.final'],
+  CHECK: ['checkResults'],
   PLAN: ['outline']
 };
 
@@ -89,4 +75,3 @@ module.exports = {
   STATE_CONTRACTS,
   GOAL_STATES
 };
-

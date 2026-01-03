@@ -1,6 +1,6 @@
 /**
- * AgentState - Agent 状态管理
- * 统一的"共享记忆板"，所有 Skill 的输入输出都通过这里
+ * AgentState - Agent 状态管理（精简版）
+ * 统一的"共享记忆板"，适配 9 个核心 Skill
  */
 
 class AgentState {
@@ -13,30 +13,24 @@ class AgentState {
 
     // 章节数据
     this.scanResult = null;
-    this.previousAnalyses = null;
     this.targetChapter = null;
 
     // 规划数据
     this.outline = null;
-    this.chapterPlan = null;
-    this.intent = null;
+    this.chapterIntent = null; // 合并了原来的 intent
+    this.previousAnalyses = null;
 
-    // 内容数据
-    this.chapterDraft = null;
-    this.finalContent = null;
-    this.rewrittenContent = null;
+    // 内容数据（使用嵌套结构）
+    this.chapters = {
+      draft: null,
+      final: null
+    };
 
     // 检查结果
-    this.checkResults = {
-      character: null,
-      world: null,
-      coherence: null,
-      overall: null
-    };
+    this.checkResults = null; // 统一为一个对象
 
     // 重写相关
     this.rewritePlan = null;
-    this.rewritePriority = null;
 
     // 其他
     this.memoryUpdated = false;
@@ -63,63 +57,47 @@ class AgentState {
         }
         break;
 
-      case 'analyze_previous_chapters':
-        this.previousAnalyses = skillOutput.analyses || [];
-        break;
-
-      case 'load_chapter_content':
-        this.chapterDraft = skillOutput.content;
-        this.targetChapter = skillOutput.chapter;
-        break;
-
-      case 'plan_chapter_outline':
+      case 'plan_chapter':
+        // 合并了 plan_intent, plan_chapter_outline, analyze_previous_chapters
         this.outline = skillOutput.outline;
-        this.chapterPlan = skillOutput;
-        break;
-
-      case 'plan_intent':
-        this.intent = skillOutput;
+        this.chapterIntent = skillOutput.chapterIntent;
+        this.previousAnalyses = skillOutput.previousAnalyses || [];
         break;
 
       case 'write_chapter':
-        this.chapterDraft = skillOutput.content;
+        this.chapters.draft = skillOutput.content;
         break;
 
-      case 'rewrite_selected_text':
-        this.rewrittenContent = skillOutput.rewrittenText;
+      case 'rewrite_chapter':
+        // 合并了 rewrite_with_plan, rewrite_selected_text
+        this.chapters.draft = skillOutput.content;
         break;
 
-      case 'rewrite_with_plan':
-        this.rewrittenContent = skillOutput.rewrittenContent;
-        break;
-
-      case 'check_character_consistency':
-        this.checkResults.character = skillOutput;
-        break;
-
-      case 'check_world_rule_violation':
-        this.checkResults.world = skillOutput;
-        break;
-
-      case 'check_coherence':
-        this.checkResults.coherence = skillOutput;
-        break;
-
-      case 'check_all':
-        this.checkResults.overall = skillOutput;
+      case 'check_chapter':
+        // 合并了所有检查 Skill
+        this.checkResults = {
+          overallStatus: skillOutput.overallStatus,
+          characterIssues: skillOutput.characterIssues || [],
+          worldRuleIssues: skillOutput.worldRuleIssues || [],
+          coherenceIssues: skillOutput.coherenceIssues || [],
+          summary: skillOutput.summary
+        };
         break;
 
       case 'generate_rewrite_plan':
         this.rewritePlan = skillOutput.rewritePlan;
-        this.rewritePriority = skillOutput.priority;
-        break;
-
-      case 'update_memory':
-        this.memoryUpdated = skillOutput.success || false;
         break;
 
       case 'finalize_chapter':
-        this.finalContent = skillOutput.finalContent;
+        this.chapters.final = skillOutput.finalContent;
+        break;
+
+      case 'update_story_memory':
+        // 合并了 update_memory
+        // 注意：update_story_memory 只更新 memoryUpdated 状态
+        // worldRules/characters/plotState 的更新是副作用，不影响 Planner 规划
+        this.memoryUpdated = skillOutput.success || false;
+        // 不更新 worldRules/characters/plotState，因为这些是副作用，不应该影响后续规划
         break;
     }
   }
@@ -141,116 +119,68 @@ class AgentState {
           include: ['world', 'characters', 'plot', 'foreshadows']
         };
 
-      case 'load_chapter_content':
-        return {
-          chapterId: baseInput.chapterId || request.targetFile
-        };
-
       case 'scan_chapters':
         return {};
 
-      case 'analyze_previous_chapters':
+      case 'plan_chapter':
         return {
           targetChapter: this.targetChapter || baseInput.chapterNumber || 1,
+          userRequest: request.userRequest || '续写新章节',
+          worldRules: this.worldRules || {},
+          characters: this.characters || [],
+          plotState: this.plotState || {},
           recentCount: request.recentCount || 3
-        };
-
-      case 'plan_chapter_outline':
-        return {
-          chapterGoal: request.userRequest || '续写新章节',
-          contextSummary: this.buildContextSummary(),
-          targetChapter: this.targetChapter || baseInput.chapterNumber || 1,
-          previousAnalyses: this.previousAnalyses || []
-        };
-
-      case 'plan_intent':
-        return {
-          userRequest: request.userRequest || '',
-          context: this.buildContextForIntent(),
-          chapterPlan: this.chapterPlan
         };
 
       case 'write_chapter':
         return {
-          outline: this.outline || [],
-          style: this.intent?.writing_guidelines || {},
-          constraints: this.intent?.constraints || {},
-          context: this.buildContextForIntent(),
-          chapterPlan: this.chapterPlan
-        };
-
-      case 'rewrite_selected_text':
-        return {
-          text: request.selectedText || this.chapterDraft || '',
-          rewriteGoal: request.userRequest || '优化文本',
-          context: this.buildContextForIntent(),
-          intent: this.intent
-        };
-
-      case 'check_character_consistency':
-        return {
-          content: this.getContent(),
-          characters: this.characters || [],
-          context: this.buildContextForIntent()
-        };
-
-      case 'check_world_rule_violation':
-        return {
-          content: this.getContent(),
+          outline: this.outline || '',
+          chapterIntent: this.chapterIntent || {},
           worldRules: this.worldRules || {},
-          context: this.buildContextForIntent()
-        };
-
-      case 'check_coherence':
-        return {
-          content: this.getContent(),
+          characters: this.characters || [],
+          plotState: this.plotState || {},
           previousAnalyses: this.previousAnalyses || [],
-          chapterPlan: this.chapterPlan
+          rewritePlan: this.rewritePlan || null
         };
 
-      case 'check_all':
+      case 'check_chapter':
         return {
-          content: this.getContent(),
+          content: this.chapters.draft || '',
           characters: this.characters || [],
           worldRules: this.worldRules || {},
+          previousAnalyses: this.previousAnalyses || [],
           context: this.buildContextForIntent()
         };
 
       case 'generate_rewrite_plan':
         return {
-          content: this.getContent(),
-          checkResult: this.checkResults.overall || {},
+          content: this.chapters.draft || '',
+          checkResults: this.checkResults || {},
           context: this.buildContextForIntent()
         };
 
-      case 'rewrite_with_plan':
+      case 'rewrite_chapter':
         return {
-          content: this.getContent(),
+          content: this.chapters.draft || '',
           rewritePlan: this.rewritePlan || '',
+          chapterIntent: this.chapterIntent || {},
           context: this.buildContextForIntent(),
-          intent: this.intent || {}
-        };
-
-      case 'save_chapter':
-        return {
-          chapterId: baseInput.chapterId || baseInput.chapterNumber,
-          content: this.getContent(),
-          filePath: request.targetFile
-        };
-
-      case 'update_memory':
-        return {
-          content: this.getContent(),
-          request: request,
-          context: this.buildContextForIntent(),
-          replaceChapter: request.replaceChapter
+          selectedText: request.selectedText || null
         };
 
       case 'finalize_chapter':
         return {
-          content: this.getContent(),
-          checks: this.checkResults.overall || {},
+          content: this.chapters.draft || '',
+          checkResults: this.checkResults || {},
           chapterNumber: this.targetChapter || baseInput.chapterNumber
+        };
+
+      case 'update_story_memory':
+        return {
+          content: this.chapters.final || '',
+          request: request,
+          context: this.buildContextForIntent(),
+          replaceChapter: request.replaceChapter
         };
 
       default:
@@ -262,9 +192,8 @@ class AgentState {
    * 获取当前内容（统一的内容获取逻辑）
    */
   getContent() {
-    return this.finalContent || 
-           this.rewrittenContent || 
-           this.chapterDraft || 
+    return this.chapters.final || 
+           this.chapters.draft || 
            '';
   }
 
@@ -303,7 +232,7 @@ class AgentState {
    */
   isTerminalState() {
     // 如果已有最终内容且已保存，认为任务完成
-    if (this.finalContent && this.memoryUpdated) {
+    if (this.chapters.final && this.memoryUpdated) {
       return true;
     }
     return false;
@@ -333,4 +262,3 @@ class AgentState {
 }
 
 module.exports = AgentState;
-
