@@ -44,10 +44,12 @@ class AgentState {
 
     switch (skillName) {
       case 'load_story_context':
-        this.worldRules = skillOutput.worldRules;
-        this.characters = skillOutput.characters;
-        this.plotState = skillOutput.plotState;
-        this.foreshadows = skillOutput.foreshadows;
+        // 即使数据为空，也更新状态（表示已加载）
+        // 这样可以避免 hasState 认为状态未加载而重复执行
+        this.worldRules = skillOutput.worldRules !== undefined ? skillOutput.worldRules : null;
+        this.characters = skillOutput.characters !== undefined ? skillOutput.characters : null;
+        this.plotState = skillOutput.plotState !== undefined ? skillOutput.plotState : null;
+        this.foreshadows = skillOutput.foreshadows !== undefined ? skillOutput.foreshadows : null;
         break;
 
       case 'scan_chapters':
@@ -123,8 +125,18 @@ class AgentState {
         return {};
 
       case 'plan_chapter':
+        // 确保 targetChapter 有值，如果没有则从 userRequest 中提取
+        let targetChapter = this.targetChapter || baseInput.chapterNumber;
+        if (!targetChapter && request.userRequest) {
+          // 从 userRequest 中提取章节号
+          const match = request.userRequest.match(/第\s*(\d+)(?:[-到]\s*(\d+))?\s*章/);
+          if (match) {
+            targetChapter = parseInt(match[1]);
+          }
+        }
+        
         return {
-          targetChapter: this.targetChapter || baseInput.chapterNumber || 1,
+          targetChapter: targetChapter || 1, // 如果还是没有，使用默认值 1
           userRequest: request.userRequest || '续写新章节',
           worldRules: this.worldRules || {},
           characters: this.characters || [],
@@ -140,7 +152,13 @@ class AgentState {
           characters: this.characters || [],
           plotState: this.plotState || {},
           previousAnalyses: this.previousAnalyses || [],
-          rewritePlan: this.rewritePlan || null
+          rewritePlan: this.rewritePlan || null,
+          context: {
+            worldRules: this.worldRules || {},
+            characters: this.characters || [],
+            plotState: this.plotState || {},
+            text_context: {} // 如果需要，可以从其他地方获取
+          }
         };
 
       case 'check_chapter':

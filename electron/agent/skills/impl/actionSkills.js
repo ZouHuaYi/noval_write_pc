@@ -84,6 +84,41 @@ class ActionSkills {
     }
 
     try {
+      // 检查 ChapterExtract 是否存在
+      const extractWriter = this.dependencies?.extractWriter;
+      const extractExists = extractWriter ? extractWriter.readExtract(chapterNumber) !== null : false;
+      
+      // 如果 ChapterExtract 不存在，先创建它（通过 update_story_memory）
+      if (!extractExists) {
+        console.log(`⚠️ 第 ${chapterNumber} 章没有 ChapterExtract，先创建...`);
+        
+        const memoryUpdater = this.dependencies?.memoryUpdater;
+        const llmCaller = options.llmCaller;
+        
+        if (memoryUpdater && llmCaller) {
+          // 从 content 中提取章节号（如果 content 中有章节标题）
+          const chapterMatch = content.match(/第\s*(\d+)\s*章/);
+          const extractedChapter = chapterMatch ? parseInt(chapterMatch[1]) : chapterNumber;
+          
+          // 创建 ChapterExtract
+          const updateResult = await memoryUpdater.update(
+            content,
+            { userRequest: `第${extractedChapter}章` },
+            options.context || {},
+            llmCaller
+          );
+          
+          if (!updateResult.success) {
+            console.warn(`⚠️ 创建 ChapterExtract 失败: ${updateResult.error}`);
+            // 继续执行，即使创建失败
+          } else {
+            console.log(`✅ ChapterExtract 已创建: chapter_${extractedChapter}.json`);
+          }
+        } else {
+          console.warn(`⚠️ 无法创建 ChapterExtract: memoryUpdater 或 llmCaller 不可用`);
+        }
+      }
+      
       // 调用记忆系统的 finalizeChapter 方法
       const result = await this.memory.finalizeChapter(chapterNumber);
       

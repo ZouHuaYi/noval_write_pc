@@ -27,6 +27,7 @@ const SkillExecutor = require('./skills/core/skillExecutor'); // Skill 执行器
 const SkillRouter = require('./skills/core/skillRouter'); // Skill 路由器
 const PlannerAgent = require('./skills/core/plannerAgent'); // Planner Agent
 const AgentState = require('./skills/core/agentState'); // Agent 状态
+const { STATE_CONTRACTS } = require('./skills/core/stateContracts'); // 状态契约
 const { AgentStates } = require('../memory/types');
 const fs = require('fs').promises;
 const path = require('path');
@@ -112,6 +113,12 @@ class AgentOrchestrator {
       // 初始化 Skill 系统（新增）
       this.skillRouter = new SkillRouter();
       this.plannerAgent = new PlannerAgent();
+      
+      // 初始化 ExtractWriter（用于 finalize_chapter 检查 ChapterExtract）
+      const ExtractWriter = require('../memory/extractors/extractWriter');
+      const extractWriter = new ExtractWriter(this.workspaceRoot);
+      
+      // 初始化 SkillExecutor（需要传递依赖）
       this.skillExecutor = new SkillExecutor(this.workspaceRoot, {
         memory: this.memory,
         contextLoader: this.contextLoader,
@@ -127,7 +134,8 @@ class AgentOrchestrator {
         densityController: this.densityController,
         memoryUpdater: this.memoryUpdater,
         fileScanner: this.fileScanner,
-        performanceOptimizer: this.performanceOptimizer
+        performanceOptimizer: this.performanceOptimizer,
+        extractWriter: extractWriter // 用于 finalize_chapter 检查 ChapterExtract
       });
 
       this.initialized = true;
@@ -206,6 +214,16 @@ class AgentOrchestrator {
 
       // 步骤 2: 初始化 AgentState
       const agentState = new AgentState();
+      
+      // 提取章节号（如果 request 中没有，从 userRequest 中提取）
+      if (!request.targetChapter && request.userRequest) {
+        const extractedChapter = this.extractChapterNumber(request.userRequest);
+        if (extractedChapter) {
+          request.targetChapter = extractedChapter;
+          logger.logAgent('从用户请求中提取章节号', { chapter: extractedChapter, request: request.userRequest });
+        }
+      }
+      
       agentState.targetChapter = request.targetChapter;
       
       // 保存当前执行状态（用于分阶段执行）
@@ -265,6 +283,11 @@ class AgentOrchestrator {
           });
 
           // 执行 Skill
+          // 确保 DSLRuleEngine 有 LLM 调用器（用于 check_chapter）
+          if (step.skill === 'check_chapter' && this.dslRuleEngine && !this.dslRuleEngine.llmCaller) {
+            this.dslRuleEngine.setLLMCaller(llmCaller);
+          }
+          
           const result = await this.skillExecutor.execute(
             step.skill,
             skillInput,
@@ -279,9 +302,17 @@ class AgentOrchestrator {
             duration: result.duration
           });
 
-          // 如果 Skill 失败且是关键步骤，中断执行
-          if (!result.success && this.isCriticalSkill(step.skill)) {
-            throw new Error(`关键 Skill 执行失败: ${step.skill} - ${result.error}`);
+          // 如果 Skill 失败，处理错误
+          if (!result.success) {
+            // 特殊处理：finalize_chapter 失败且是因为缺少 ChapterExtract
+            if (step.skill === 'finalize_chapter' && result.error && result.error.includes('Extract not found')) {
+              this.log(`finalize_chapter 失败：缺少 ChapterExtract，将在 write_chapter 后自动创建`, {}, 'WARN');
+              // 不抛出错误，允许继续执行
+              // 注意：ChapterExtract 会在 write_chapter 后通过 update_story_memory 创建
+              // 但由于 update_story_memory 不在 Planner 规划中，我们需要在 finalize_chapter 中自动创建
+            } else if (this.isCriticalSkill(step.skill)) {
+              throw new Error(`关键 Skill 执行失败: ${step.skill} - ${result.error}`);
+            }
           }
 
           // 更新 AgentState（从 Skill 输出）
@@ -294,8 +325,24 @@ class AgentOrchestrator {
             
             // 检查状态是否发生变化（避免无限循环）
             const produces = step.produces || 'unknown';
-            if (!this.plannerAgent.hasStateChanged(oldState, agentState, produces)) {
-              logger.logAgent(`Skill ${step.skill} 执行后状态未变化，可能陷入循环`, {}, 'WARN');
+            const contract = STATE_CONTRACTS[step.skill];
+            const producesStates = contract?.producesState || [produces];
+            
+            // 检查所有 producesState 是否发生变化
+            let hasAnyChange = false;
+            for (const stateKey of producesStates) {
+              if (this.plannerAgent.hasStateChanged(oldState, agentState, stateKey)) {
+                hasAnyChange = true;
+                break;
+              }
+            }
+            
+            if (!hasAnyChange) {
+              logger.logAgent(`Skill ${step.skill} 执行后状态未变化，可能陷入循环`, {
+                producesStates,
+                oldValue: this.plannerAgent.getStateValue(oldState, producesStates[0]),
+                newValue: this.plannerAgent.getStateValue(agentState, producesStates[0])
+              }, 'WARN');
             }
           }
 

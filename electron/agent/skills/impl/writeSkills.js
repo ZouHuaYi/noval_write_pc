@@ -15,19 +15,30 @@ class WriteSkills {
    * write_chapter - 生成章节内容
    */
   async writeChapter(input, options = {}) {
-    const { outline, style, constraints, context = {}, chapterPlan = null } = input;
+    const { outline, style, constraints, context = {}, chapterPlan = null, chapterIntent = null } = input;
     
     const llmCaller = options.llmCaller || this.llmCaller;
     if (!llmCaller) {
       throw new Error('LLM caller not available');
     }
 
-    // 构建写作意图（兼容现有 orchestrator 的格式）
-    const intent = {
-      goal: constraints.goal || '生成章节内容',
-      constraints: constraints,
-      writing_guidelines: style || {}
-    };
+    // 构建写作意图（优先使用 chapterIntent，否则使用 constraints）
+    let intent;
+    if (chapterIntent && typeof chapterIntent === 'object') {
+      // 使用 plan_chapter 产生的 chapterIntent
+      intent = {
+        goal: chapterIntent.goal || '生成章节内容',
+        constraints: chapterIntent.constraints || constraints || {},
+        writing_guidelines: chapterIntent.writing_guidelines || style || {}
+      };
+    } else {
+      // 兼容旧格式
+      intent = {
+        goal: (constraints && constraints.goal) || '生成章节内容',
+        constraints: constraints || {},
+        writing_guidelines: style || {}
+      };
+    }
 
     // 构建上下文（兼容现有格式）
     const fullContext = {

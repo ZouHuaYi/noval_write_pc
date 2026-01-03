@@ -150,11 +150,28 @@ OUTPUT (JSON ONLY):
     const currentState = this.serializeState(state);
     const missingStates = this.getMissingStates(goalStates, state);
     
+    // 添加状态详情（帮助 LLM 理解当前状态）
+    const stateDetails = [];
+    if (state.worldRules !== null && state.worldRules !== undefined) {
+      const isEmpty = typeof state.worldRules === 'object' && Object.keys(state.worldRules).length === 0;
+      stateDetails.push(`worldRules: ${isEmpty ? '已加载但为空' : '已加载'}`);
+    }
+    if (state.characters !== null && state.characters !== undefined) {
+      const count = Array.isArray(state.characters) ? state.characters.length : 0;
+      stateDetails.push(`characters: ${count === 0 ? '已加载但为空' : `已加载 (${count}个)`}`);
+    }
+    if (state.chapters?.final) {
+      stateDetails.push(`chapters.final: 已生成`);
+    } else if (state.chapters?.draft) {
+      stateDetails.push(`chapters.draft: 已生成`);
+    }
+    
     return `# 目标状态（必须达到）
 ${goalStates.map(s => `- ${s}`).join('\n')}
 
 # 当前状态
 ${currentState}
+${stateDetails.length > 0 ? `\n状态详情：\n${stateDetails.join('\n')}` : ''}
 
 # 缺失的状态
 ${missingStates.length > 0 ? missingStates.map(s => `- ${s}`).join('\n') : '无（目标已满足）'}
@@ -167,7 +184,11 @@ ${request.userRequest || ''}
 ${request.selectedText ? `\n选中文本: ${request.selectedText.substring(0, 100)}...` : ''}
 
 # 任务
-请规划下一步要执行的 Skill，以补齐缺失的状态。只规划 1-2 步，不要规划整个流程。`;
+请规划下一步要执行的 Skill，以补齐缺失的状态。只规划 1-2 步，不要规划整个流程。
+
+重要提示：
+- 如果 worldRules/characters 已加载但为空，不要重复执行 load_story_context
+- 如果目标状态是 chapters.final，需要先有 chapters.draft，然后 check_chapter，最后 finalize_chapter`;
   }
 
   /**
@@ -176,27 +197,39 @@ ${request.selectedText ? `\n选中文本: ${request.selectedText.substring(0, 10
   serializeState(state) {
     const parts = [];
     
-    if (state.worldRules) parts.push('✓ worldRules');
-    if (state.characters && state.characters.length > 0) {
-      parts.push(`✓ characters (${state.characters.length})`);
+    // 上下文状态
+    if (this.hasState(state, 'worldRules')) parts.push('✓ worldRules');
+    if (this.hasState(state, 'characters')) {
+      const count = state.characters?.length || 0;
+      parts.push(`✓ characters (${count})`);
     }
-    if (state.scanResult) parts.push('✓ scanResult');
-    if (state.previousAnalyses && state.previousAnalyses.length > 0) {
-      parts.push(`✓ previousAnalyses (${state.previousAnalyses.length})`);
+    if (this.hasState(state, 'plotState')) parts.push('✓ plotState');
+    if (this.hasState(state, 'foreshadows')) parts.push('✓ foreshadows');
+    
+    // 扫描和章节状态
+    if (this.hasState(state, 'scanResult')) parts.push('✓ scanResult');
+    if (this.hasState(state, 'targetChapter')) parts.push(`✓ targetChapter (${state.targetChapter})`);
+    
+    // 规划状态
+    if (this.hasState(state, 'outline')) parts.push('✓ outline');
+    if (this.hasState(state, 'chapterIntent')) parts.push('✓ chapterIntent');
+    if (this.hasState(state, 'previousAnalyses')) {
+      const count = state.previousAnalyses?.length || 0;
+      parts.push(`✓ previousAnalyses (${count})`);
     }
-    if (state.outline) parts.push('✓ outline');
-    if (state.chapterPlan) parts.push('✓ chapterPlan');
-    if (state.intent) parts.push('✓ intent');
-    if (state.chapterDraft) parts.push('✓ chapterDraft');
-    if (state.finalContent) parts.push('✓ finalContent');
-    if (state.rewrittenContent) parts.push('✓ rewrittenContent');
-    if (state.checkResults?.character) parts.push('✓ checkResults.character');
-    if (state.checkResults?.world) parts.push('✓ checkResults.world');
-    if (state.checkResults?.coherence) parts.push('✓ checkResults.coherence');
-    if (state.checkResults?.overall) parts.push('✓ checkResults.overall');
-    if (state.rewritePlan) parts.push('✓ rewritePlan');
+    
+    // 内容状态（关键！）
+    if (this.hasState(state, 'chapters.draft')) parts.push('✓ chapters.draft');
+    if (this.hasState(state, 'chapters.final')) parts.push('✓ chapters.final');
+    
+    // 检查结果
+    if (this.hasState(state, 'checkResults')) parts.push('✓ checkResults');
+    
+    // 重写计划
+    if (this.hasState(state, 'rewritePlan')) parts.push('✓ rewritePlan');
+    
+    // 其他
     if (state.memoryUpdated) parts.push('✓ memoryUpdated');
-    if (state.targetChapter) parts.push(`✓ targetChapter (${state.targetChapter})`);
 
     if (parts.length === 0) {
       return '状态：空（需要加载上下文）';
@@ -214,6 +247,10 @@ ${request.selectedText ? `\n选中文本: ${request.selectedText.substring(0, 10
 
   /**
    * 检查状态是否存在
+   * 
+   * 注意：对于某些状态（如 worldRules, characters），即使为空（{} 或 []）
+   * 也认为已加载，因为 load_story_context 执行后可能返回空数据
+   * 但这表示"已尝试加载"，而不是"未加载"
    */
   hasState(state, stateKey) {
     // 支持嵌套状态键，如 "checkResults.overall"
@@ -227,7 +264,23 @@ ${request.selectedText ? `\n选中文本: ${request.selectedText.substring(0, 10
       current = current[key];
     }
     
-    // 检查值是否有效（不是空字符串、空数组、空对象）
+    // 特殊处理：某些状态即使为空也认为已加载
+    // 这些状态来自 load_story_context，空值表示"已加载但无数据"
+    const allowEmptyStates = [
+      'worldRules',      // 可能为空对象 {}
+      'characters',      // 可能为空数组 []
+      'plotState',       // 可能为空对象 {}
+      'foreshadows'      // 可能为空对象 {}
+    ];
+    
+    // 如果状态键在允许空值的列表中，且值不是 null/undefined，则认为已加载
+    if (allowEmptyStates.includes(stateKey)) {
+      // 对于这些状态，只要不是 null/undefined，就认为已加载
+      // 即使值是 {} 或 []，也表示 load_story_context 已执行过
+      return current !== null && current !== undefined;
+    }
+    
+    // 其他状态：检查值是否有效（不是空字符串、空数组、空对象）
     if (typeof current === 'string' && current.trim() === '') return false;
     if (Array.isArray(current) && current.length === 0) return false;
     if (typeof current === 'object' && Object.keys(current).length === 0) return false;
@@ -286,11 +339,32 @@ ${request.selectedText ? `\n选中文本: ${request.selectedText.substring(0, 10
       }
 
       // 4. 检查 Skill 是否会产生新状态（避免重复执行）
+      // 注意：只有当所有 producesState 都已存在且 Skill 已执行过至少一次时，才跳过
+      // 如果 Skill 从未执行过，即使状态已存在，也应该执行一次（可能是从外部加载的状态）
       const produces = contract.producesState;
       const alreadyProduced = produces.every(prod => this.hasState(state, prod));
-      if (alreadyProduced && executionCount > 0) {
-        logger.logAgent(`Skill ${step.skill} 已产生所需状态，跳过重复执行`, {}, 'WARN');
+      
+      // 特殊处理：finalize_chapter 即使已产生 chapters.final，如果执行失败过，允许重试
+      if (step.skill === 'finalize_chapter' && executionCount > 0 && alreadyProduced) {
+        // finalize_chapter 可能因为缺少 ChapterExtract 而失败，允许重试
+        logger.logAgent(`Skill ${step.skill} 已产生所需状态，但可能因依赖问题失败过，允许重试`, {
+          produces,
+          executionCount
+        });
+        // 不跳过，允许重试
+      } else if (alreadyProduced && executionCount > 0) {
+        logger.logAgent(`Skill ${step.skill} 已产生所需状态，跳过重复执行`, {
+          produces,
+          executionCount
+        }, 'WARN');
         continue;
+      }
+      
+      // 如果状态已存在但 Skill 从未执行过，记录信息但不跳过（允许执行一次以确认状态）
+      if (alreadyProduced && executionCount === 0) {
+        logger.logAgent(`Skill ${step.skill} 的状态已存在，但 Skill 未执行过，允许执行一次`, {
+          produces
+        });
       }
 
       // 5. 验证通过

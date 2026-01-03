@@ -604,10 +604,18 @@ ${JSON.stringify(checkResult, null, 2)}
     }
 
     // 2. 规划章节大纲
+    // 确保 targetChapter 有值
+    const finalTargetChapter = targetChapter || 1;
+    if (!targetChapter) {
+      console.warn(`⚠️ plan_chapter: targetChapter 未设置，使用默认值 1`);
+    } else {
+      console.log(`📋 plan_chapter: 规划第 ${finalTargetChapter} 章`);
+    }
+    
     const outlineResult = await this.planChapterOutline({
       chapterGoal: userRequest || '续写新章节',
       contextSummary: this.buildContextSummary(worldRules, characters, plotState, previousAnalyses),
-      targetChapter: targetChapter || 1,
+      targetChapter: finalTargetChapter,
       previousAnalyses
     }, options);
 
