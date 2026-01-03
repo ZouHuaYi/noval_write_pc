@@ -607,10 +607,20 @@ ${limitedContent}
       // 确保章节号存在
       extracted.chapter = chapterNumber;
 
+      // 验证和填充默认值
+      if (!extracted.fact_candidates) extracted.fact_candidates = [];
+      if (!extracted.concept_mentions) extracted.concept_mentions = [];
+      if (!extracted.foreshadow_candidates) extracted.foreshadow_candidates = [];
+      if (!extracted.story_state_snapshot) extracted.story_state_snapshot = {};
+      if (!extracted.raw_notes) extracted.raw_notes = '';
+
       // 写入 ChapterExtract（临时账本）
       await this.extractWriter.writeExtract(chapterNumber, extracted);
       
       console.log(`✅ 已写入 ChapterExtract: chapter_${chapterNumber}.json`);
+      
+      // 标记为已写入
+      extracted.extract_written = true;
       
       // 返回提取结果
       return extracted;

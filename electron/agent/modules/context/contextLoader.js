@@ -1,6 +1,8 @@
 /**
  * Context Loader - 智能上下文加载器
  * 根据操作类型和目标章节，智能加载前后文
+ * 
+ * 优化：复用 memory 模块的功能，减少重复代码
  */
 
 const fs = require('fs').promises;
@@ -12,15 +14,6 @@ class ContextLoader {
     this.fileScanner = fileScanner;
     this.chapterFileManager = chapterFileManager;
     this.memoryManager = memoryManager; // 用于获取设定文件内容
-    
-    // 设定文件列表（按优先级排序）
-    this.settingFiles = [
-      '设定.md',
-      'prompt.md',
-      '世界观.md',
-      '提示.md',
-      '人物.md'
-    ];
     
     // 性能优化：添加缓存机制
     this.cache = new Map();
@@ -278,7 +271,7 @@ class ContextLoader {
   }
 
   /**
-   * 加载设定文件上下文（用于前面几章）
+   * 加载设定文件上下文（优化：复用 memory 模块的功能）
    */
   async loadSettingsContext(context, targetChapter) {
     console.log(`📚 加载设定文件上下文（第${targetChapter}章）...`);
@@ -290,7 +283,8 @@ class ContextLoader {
       const worldData = this.memoryManager.world.getData();
       if (worldData.custom_rules && worldData.custom_rules.length > 0) {
         for (const rule of worldData.custom_rules) {
-          if (rule.source && this.settingFiles.includes(rule.source)) {
+          // 检查是否是设定文件来源的规则
+          if (rule.source && this.isSettingFile(rule.source)) {
             settings.push({
               file: rule.source,
               content: rule.content || '',
@@ -303,9 +297,32 @@ class ContextLoader {
       }
     }
     
-    // 2. 如果记忆系统没有，直接从文件读取（使用缓存）
+    // 2. 如果记忆系统没有，使用 SettingExtractor 提取（复用 memory 模块）
+    if (settings.length === 0 && this.memoryManager && this.memoryManager.settingExtractor) {
+      try {
+        const extracted = await this.memoryManager.settingExtractor.extractAll();
+        
+        // 从提取结果构建设定上下文
+        if (extracted.worldRules && extracted.worldRules.raw_content) {
+          for (const sourceFile of extracted.worldRules.source_files || []) {
+            settings.push({
+              file: sourceFile,
+              content: extracted.worldRules.raw_content,
+              type: 'world_rule',
+              length: extracted.worldRules.raw_content.length
+            });
+            console.log(`   ✅ 从 SettingExtractor 加载: ${sourceFile}`);
+          }
+        }
+      } catch (error) {
+        console.warn('⚠️ 使用 SettingExtractor 提取设定失败:', error.message);
+      }
+    }
+    
+    // 3. 如果还是没有，直接从文件读取（使用缓存）- 回退方案
     if (settings.length === 0) {
-      for (const filename of this.settingFiles) {
+      const settingFiles = this.getSettingFiles();
+      for (const filename of settingFiles) {
         const filepath = path.join(this.workspaceRoot, filename);
         const content = await this.getFileContent(filepath);
         if (content && content.trim()) {
@@ -320,21 +337,6 @@ class ContextLoader {
       }
     }
     
-    // 3. 如果还是没有，尝试读取人物.md（使用缓存）
-    if (settings.length === 0) {
-      const characterFile = path.join(this.workspaceRoot, '人物.md');
-      const content = await this.getFileContent(characterFile);
-      if (content && content.trim()) {
-        settings.push({
-          file: '人物.md',
-          content: content,
-          type: 'character',
-          length: content.length
-        });
-        console.log(`   ✅ 读取人物设定: 人物.md (${content.length} 字)`);
-      }
-    }
-    
     context.text_context.settings = settings;
     
     if (settings.length > 0) {
@@ -344,6 +346,21 @@ class ContextLoader {
     }
     
     return context;
+  }
+
+  /**
+   * 获取设定文件列表（统一管理，与 SettingExtractor 保持一致）
+   */
+  getSettingFiles() {
+    // 如果 memoryManager 有 settingExtractor，使用它的列表
+    return this.memoryManager?.settingExtractor?.settingFiles || []
+  }
+
+  /**
+   * 判断是否为设定文件
+   */
+  isSettingFile(filename) {
+    return this.getSettingFiles().includes(filename) || filename === '人物.md';
   }
 
   /**
@@ -529,31 +546,6 @@ class ContextLoader {
     return results;
   }
   
-  /**
-   * 加载章节内容（旧版，保留兼容性）
-   */
-  async loadChapters_old(chapterNumbers) {
-    const chapters = [];
-    
-    for (const chapterNum of chapterNumbers) {
-      try {
-        const content = await this.fileScanner.readChapterContent(chapterNum);
-        if (content) {
-          chapters.push({
-            chapter: chapterNum,
-            content: content,
-            length: content.length,
-            preview: content.substring(0, 200) + '...'
-          });
-        }
-      } catch (error) {
-        console.warn(`无法读取第${chapterNum}章:`, error.message);
-      }
-    }
-
-    return chapters;
-  }
-
   /**
    * 加载相关章节（基于关键词匹配）
    */
@@ -743,4 +735,3 @@ class ContextLoader {
 }
 
 module.exports = ContextLoader;
-

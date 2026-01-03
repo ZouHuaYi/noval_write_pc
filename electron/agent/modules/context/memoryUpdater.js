@@ -2,16 +2,29 @@
  * Memory Updater - 记忆更新器（重构版）
  * 从生成的文本中提取事实，写入 ChapterExtract（临时账本）
  * 不再直接写入长期记忆，而是通过 ChapterFinalizer 结算
+ * 
+ * 优化：复用 memory 模块的 IntelligentExtractor
  */
 
 const ExtractWriter = require('../../../memory/extractors/extractWriter');
+const IntelligentExtractor = require('../../../memory/extractors/intelligentExtractor');
+const { callLLM } = require('../../../core/llm');
+const { safeParseJSON } = require('../../../utils/jsonParser');
 
 class MemoryUpdater {
   constructor(memoryManager, workspaceRoot) {
     this.memory = memoryManager;
     this.workspaceRoot = workspaceRoot;
     this.extractWriter = new ExtractWriter(workspaceRoot);
-    this.systemPrompt = this.buildSystemPrompt();
+    // 复用 memory 模块的 IntelligentExtractor（如果 memory 有 llmConfig）
+    this.intelligentExtractor = null;
+    if (memoryManager && memoryManager.llmConfig) {
+      this.intelligentExtractor = new IntelligentExtractor(
+        workspaceRoot,
+        memoryManager,
+        memoryManager.llmConfig
+      );
+    }
   }
 
   /**
@@ -175,6 +188,7 @@ class MemoryUpdater {
       console.log(`   章节号: 第${chapterNum}章`);
 
       // 使用 LLM 提取事实（输出 ChapterExtract 格式）
+      // 优先使用 memory 模块的 IntelligentExtractor
       console.log('📊 步骤 2/2: 使用 LLM 提取事实...');
       const extract = await this.extractFacts(text, chapterNum, context, llmCaller);
 
@@ -188,14 +202,18 @@ class MemoryUpdater {
       console.log(`   - 概念提及: ${conceptCount} 个`);
       console.log(`   - 伏笔候选: ${foreshadowCount} 个`);
 
-      // 写入 ChapterExtract（临时账本）
-      const writeResult = await this.extractWriter.writeExtract(chapterNum, extract);
-
-      if (!writeResult.success) {
-        throw new Error(`写入 ChapterExtract 失败: ${writeResult.error}`);
+      // 注意：如果使用了 IntelligentExtractor，它内部已经写入了 ChapterExtract
+      // 这里只需要检查是否写入成功
+      if (!extract.extract_written) {
+        // 如果 IntelligentExtractor 没有写入，这里写入
+        const writeResult = await this.extractWriter.writeExtract(chapterNum, extract);
+        if (!writeResult.success) {
+          throw new Error(`写入 ChapterExtract 失败: ${writeResult.error}`);
+        }
+        console.log(`✅ ChapterExtract 已写入: chapter_${chapterNum}.json`);
+      } else {
+        console.log(`✅ ChapterExtract 已写入: chapter_${chapterNum}.json (通过 IntelligentExtractor)`);
       }
-
-      console.log(`✅ ChapterExtract 已写入: chapter_${chapterNum}.json`);
       console.log(`   ⚠️  注意：需要调用 ChapterFinalizer 结算后才能写入长期记忆`);
 
       return {
@@ -221,13 +239,31 @@ class MemoryUpdater {
 
   /**
    * 使用 LLM 提取事实（输出 ChapterExtract 格式）
+   * 优化：优先使用 memory 模块的 IntelligentExtractor.extractFromChapter()
    */
   async extractFacts(text, chapterNum, context, llmCaller) {
     try {
+      // 优先使用 IntelligentExtractor（如果可用且 llmCaller 可以转换为 llmConfig）
+      if (this.intelligentExtractor && this.canUseIntelligentExtractor(llmCaller)) {
+        try {
+          // 使用 IntelligentExtractor（内部已写入 ChapterExtract）
+          const extract = await this.intelligentExtractor.extractFromChapter(
+            text,
+            chapterNum,
+            `chapter_${chapterNum}.txt`
+          );
+          return extract;
+        } catch (error) {
+          console.warn('使用 IntelligentExtractor 失败，回退到直接调用:', error.message);
+          // 回退到直接调用
+        }
+      }
+
+      // 回退方案：直接使用 llmCaller（兼容原有逻辑）
       const userPrompt = this.buildExtractPrompt(text, chapterNum, context);
 
       const result = await llmCaller({
-        systemPrompt: this.systemPrompt,
+        systemPrompt: this.buildSystemPrompt(),
         userPrompt,
         temperature: 0.2, // 低温度，保证准确性
         maxTokens: 4000
@@ -237,7 +273,12 @@ class MemoryUpdater {
         throw new Error('LLM 调用失败');
       }
 
-      return this.parseExtract(result.response, chapterNum);
+      const extract = this.parseExtract(result.response, chapterNum);
+      
+      // 标记为未通过 IntelligentExtractor 写入
+      extract.extract_written = false;
+      
+      return extract;
 
     } catch (error) {
       console.error('事实提取失败:', error);
@@ -252,6 +293,98 @@ class MemoryUpdater {
         raw_notes: `提取失败: ${error.message}`
       };
     }
+  }
+
+  /**
+   * 检查是否可以使用 IntelligentExtractor
+   * 如果 memory 有 llmConfig，可以使用
+   */
+  canUseIntelligentExtractor(llmCaller) {
+    // 如果 IntelligentExtractor 已初始化，可以使用
+    return !!this.intelligentExtractor;
+  }
+
+  /**
+   * 构建系统提示词（保留用于回退方案）
+   */
+  buildSystemPrompt() {
+    return `你是小说分析 Agent，而不是记忆系统。
+
+# 核心规则
+1. **禁止直接写入任何长期记忆**（角色、剧情、伏笔、世界观）
+2. **只能输出 ChapterExtract JSON**
+3. **不得重复总结已有事实**，只在发现"可能新增信息"时输出
+4. **如果只是确认、强化、换说法**，请在 raw_notes 标明
+5. **所有概念请用自然语言**，不要尝试生成 ID
+
+# 核心任务
+分析文本，区分"事实"和"修辞"，提取需要记录的关键信息。
+
+# 区分标准
+
+## 事实（需要记录）
+- 世界规则（物理/超自然）
+- 生物学事实
+- 人物不可逆事件（死亡/觉醒）
+- 地点的客观属性
+- 新概念首次出现
+
+## 修辞（无需记录）
+- 情绪描写（愤怒、喜悦等临时情绪）
+- 环境描写（除非是重要的新地点）
+- 对话中的夸张、比喻
+- AI 推测、"可能"、"也许"
+
+# 输出要求
+必须返回标准 JSON 格式，不要有任何其他文字。
+
+# 输出结构（ChapterExtract）
+\`\`\`json
+{
+  "chapter": 章节号,
+  "fact_candidates": [
+    {
+      "statement": "事实陈述（客观、不可逆）",
+      "type": "world_rule" | "biology" | "irreversible_event" | "location",
+      "confidence": "observed" | "canonical",
+      "evidence": "证据来源",
+      "source_refs": ["章节引用"],
+      "concept_refs": ["相关概念表面文本"]
+    }
+  ],
+  "concept_mentions": [
+    {
+      "surface": "概念表面文本（如'地磁异常'）",
+      "context": "出现上下文",
+      "chapter": 章节号,
+      "description": "概念描述（可选）"
+    }
+  ],
+  "foreshadow_candidates": [
+    {
+      "surface": "伏笔相关概念表面文本",
+      "implied_future": "暗示的未来",
+      "chapter": 章节号,
+      "state_change": "pending" | "confirmed" | "revealed" | "archived"（可选）
+    }
+  ],
+  "story_state_snapshot": {
+    "current_location": "当前地点",
+    "global_tension": "low" | "medium" | "high" | "critical",
+    "known_threats": ["威胁概念表面文本"],
+    "open_mysteries": ["未解之谜概念表面文本"]
+  },
+  "raw_notes": "如果只是确认已有事实，在这里说明"
+}
+\`\`\`
+
+# 关键规则
+1. **保守原则**：不确定的信息不要记录
+2. **客观描述**：只记录发生的事实，不要加入推测
+3. **去除修辞**：去除夸张、比喻等修辞成分
+4. **明确变化**：只记录确实发生变化的信息
+5. **章节定位**：如果知道章节号，一定要填写
+6. **概念归一**：同一概念的不同表述都要列出，系统会自动归一`;
   }
 
   /**
