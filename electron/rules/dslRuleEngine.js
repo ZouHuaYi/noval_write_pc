@@ -1,6 +1,6 @@
 /**
- * DSL Rule Engine - DSL 规则引擎
- * 支持可执行的规则 DSL，实现"像编译器一样判定小说是否合法"
+ * DSL Rule Engine - DSL 规则引擎（LLM 驱动版）
+ * 支持可执行的规则 DSL，使用 LLM 进行语义判断，无硬编码
  * 
  * 规则类型：
  * - WORLD: 世界观规则（永远强制）
@@ -16,8 +16,9 @@
  */
 
 class DSLRuleEngine {
-  constructor(workspaceRoot) {
+  constructor(workspaceRoot, llmCaller = null) {
     this.workspaceRoot = workspaceRoot;
+    this.llmCaller = llmCaller;
     this.rules = {
       WORLD: [],
       CHARACTER: [],
@@ -26,6 +27,13 @@ class DSLRuleEngine {
       ARC: []
     };
     this.loaded = false;
+  }
+
+  /**
+   * 设置 LLM 调用器
+   */
+  setLLMCaller(llmCaller) {
+    this.llmCaller = llmCaller;
   }
 
   /**
@@ -98,6 +106,7 @@ class DSLRuleEngine {
 
   /**
    * 执行规则检查（Dry Run，不写回记忆）
+   * 合并所有规则到一次 LLM 调用中，提高效率
    * @param {Object} params - 检查参数
    * @param {string} params.text - 待检查的文本
    * @param {Object} params.intent - 写作意图
@@ -110,97 +119,280 @@ class DSLRuleEngine {
       throw new Error('规则引擎未加载');
     }
 
+    if (!this.llmCaller) {
+      throw new Error('LLM 调用器未设置');
+    }
+
     const { text, intent, context, events = [], stateTransitions = [] } = params;
+
+    // 收集所有规则
+    const allRules = [
+      ...this.rules.WORLD.map(r => ({ ...r, scope: 'WORLD' })),
+      ...this.rules.CHARACTER.map(r => ({ ...r, scope: 'CHARACTER' })),
+      ...this.rules.HISTORY.map(r => ({ ...r, scope: 'HISTORY' })),
+      ...this.rules.INTENT.map(r => ({ ...r, scope: 'INTENT' })),
+      ...this.rules.ARC.map(r => ({ ...r, scope: 'ARC' }))
+    ];
+
+    if (allRules.length === 0) {
+      return [];
+    }
+
+    // 一次性检查所有规则
+    return await this.evaluateAllRules(allRules, text, intent, context, events, stateTransitions);
+  }
+
+  /**
+   * 一次性评估所有规则（LLM 驱动）
+   */
+  async evaluateAllRules(allRules, text, intent, context, events, stateTransitions) {
+    try {
+      const systemPrompt = `你是一个严格的规则检查器。你的任务是检查文本是否违反了给定的所有规则。
+
+# 规则列表
+
+${allRules.map((rule, index) => `
+## 规则 ${index + 1}
+- 规则ID: ${rule.id}
+- 规则名称: ${rule.name || rule.id}
+- 规则类型: ${rule.scope}
+- 规则级别: ${rule.level || 'FATAL'}
+- 规则断言: ${JSON.stringify(rule.assert, null, 2)}
+${rule.message ? `- 规则说明: ${rule.message}` : ''}
+${rule.suggestion ? `- 建议: ${rule.suggestion}` : ''}
+`).join('\n')}
+
+# 上下文信息
+
+## 世界观
+${JSON.stringify(context.worldRules || {}, null, 2)}
+
+## 角色信息
+${JSON.stringify(context.characters || [], null, 2)}
+
+## 剧情状态
+${JSON.stringify(context.plotState || {}, null, 2)}
+
+## 历史记录
+${JSON.stringify(context.history || context.previousAnalyses || [], null, 2)}
+
+## 事件列表
+${JSON.stringify(events, null, 2)}
+
+## 状态迁移
+${JSON.stringify(stateTransitions, null, 2)}
+
+## 写作意图
+${JSON.stringify(intent || {}, null, 2)}
+
+# 任务
+
+请仔细分析文本和所有规则，找出所有违规情况。对于每个违规，需要提供：
+1. 违反的规则ID
+2. 违规原因
+3. 违规位置（如段落、句子等）
+4. 涉及的角色或实体（如果有）
+5. 状态迁移信息（如果有）
+
+特别注意：
+- **世界观规则**：检查文本是否违反世界观设定
+- **人物规则**：检查角色行为、性格一致性、状态迁移合法性
+- **历史一致性规则**：检查事件是否与历史记录矛盾
+- **Intent 契约规则**：检查文本是否实现了写作意图，是否违反了意图约束
+- **Arc 推进规则**：检查 Arc 阶段是否推进，是否存在水文
+
+# 输出格式（JSON）
+
+{
+  "violations": [
+    {
+      "rule_id": "规则ID",
+      "rule_name": "规则名称",
+      "type": "违规类型（world_rule/character/history/intent/arc）",
+      "level": "违规级别（FATAL/ERROR/WARN）",
+      "scope": "规则类型（WORLD/CHARACTER/HISTORY/INTENT/ARC）",
+      "message": "违规消息",
+      "suggestion": "修正建议",
+      "matched_condition": "匹配的条件描述",
+      "location": "违规位置（可选）",
+      "character": "涉及的角色（可选）",
+      "state_transition": "状态迁移信息（可选）",
+      "validation_error": "验证错误详情（可选）",
+      "contradicting_event": "矛盾的事件（可选）",
+      "contradicting_history": "矛盾的历史记录（可选）",
+      "unfulfilled_goal": "未实现的目标（可选）",
+      "violated_constraint": "违反的约束（可选）",
+      "arc_progress": "Arc 推进情况（可选）",
+      "is_padding": "是否为水文（可选）"
+    }
+  ]
+}
+
+如果没有违规，返回：
+{
+  "violations": []
+}`;
+
+      const userPrompt = `# 待检查的文本
+
+${text}
+
+请检查这段文本是否违反了上述所有规则。`;
+
+      const result = await this.llmCaller({
+        systemPrompt,
+        userPrompt,
+        temperature: 0.1,
+        maxTokens: 2000 // 增加 token 限制以支持多个违规情况
+      });
+
+      const response = this.parseLLMResponse(result);
+      
+      if (response && response.violations && Array.isArray(response.violations)) {
+        // 确保每个违规都有正确的结构
+        return response.violations.map(v => ({
+          rule_id: v.rule_id,
+          rule_name: v.rule_name || v.rule_id,
+          type: v.type || this.getViolationTypeByScope(v.scope),
+          level: v.level || 'FATAL',
+          scope: v.scope,
+          message: v.message || `违反规则: ${v.rule_id}`,
+          suggestion: v.suggestion || '请修正违规内容',
+          matched_condition: v.matched_condition || '',
+          location: v.location,
+          character: v.character,
+          state_transition: v.state_transition,
+          validation_error: v.validation_error,
+          contradicting_event: v.contradicting_event,
+          contradicting_history: v.contradicting_history,
+          unfulfilled_goal: v.unfulfilled_goal,
+          violated_constraint: v.violated_constraint,
+          arc_progress: v.arc_progress,
+          is_padding: v.is_padding
+        }));
+      }
+
+      return [];
+    } catch (error) {
+      console.error('评估所有规则失败:', error);
+      // 如果合并调用失败，可以回退到逐个检查（可选）
+      return await this.evaluateRulesFallback(allRules, text, intent, context, events, stateTransitions);
+    }
+  }
+
+  /**
+   * 根据规则类型获取违规类型
+   */
+  getViolationTypeByScope(scope) {
+    const typeMap = {
+      'WORLD': 'world_rule',
+      'CHARACTER': 'character',
+      'HISTORY': 'history',
+      'INTENT': 'intent',
+      'ARC': 'arc'
+    };
+    return typeMap[scope] || 'unknown';
+  }
+
+  /**
+   * 回退方案：逐个检查规则（当合并调用失败时）
+   */
+  async evaluateRulesFallback(allRules, text, intent, context, events, stateTransitions) {
     const violations = [];
-
-    // 1. 世界观规则检查
-    for (const rule of this.rules.WORLD) {
-      const violation = await this.evaluateWorldRule(rule, text, context, events);
-      if (violation) {
-        violations.push(violation);
+    
+    for (const rule of allRules) {
+      try {
+        let violation = null;
+        
+        switch (rule.scope) {
+          case 'WORLD':
+            violation = await this.evaluateWorldRule(rule, text, context, events);
+            break;
+          case 'CHARACTER':
+            violation = await this.evaluateCharacterRule(rule, text, context, stateTransitions);
+            break;
+          case 'HISTORY':
+            violation = await this.evaluateHistoryRule(rule, events, context);
+            break;
+          case 'INTENT':
+            violation = await this.evaluateIntentRule(rule, text, intent);
+            break;
+          case 'ARC':
+            violation = await this.evaluateArcRule(rule, text, context, events);
+            break;
+        }
+        
+        if (violation) {
+          violations.push(violation);
+        }
+      } catch (error) {
+        console.error(`评估规则失败: ${rule.id}`, error);
       }
     }
-
-    // 2. 人物规则检查
-    for (const rule of this.rules.CHARACTER) {
-      const violation = await this.evaluateCharacterRule(rule, text, context, stateTransitions);
-      if (violation) {
-        violations.push(violation);
-      }
-    }
-
-    // 3. 历史一致性规则检查
-    for (const rule of this.rules.HISTORY) {
-      const violation = await this.evaluateHistoryRule(rule, events, context);
-      if (violation) {
-        violations.push(violation);
-      }
-    }
-
-    // 4. Intent 契约规则检查
-    for (const rule of this.rules.INTENT) {
-      const violation = await this.evaluateIntentRule(rule, text, intent);
-      if (violation) {
-        violations.push(violation);
-      }
-    }
-
-    // 5. Arc 推进规则检查
-    for (const rule of this.rules.ARC) {
-      const violation = await this.evaluateArcRule(rule, text, context, events);
-      if (violation) {
-        violations.push(violation);
-      }
-    }
-
+    
     return violations;
   }
 
   /**
-   * 评估世界观规则
+   * 评估世界观规则（LLM 驱动）
    */
   async evaluateWorldRule(rule, text, context, events) {
     try {
-      const assert = rule.assert;
-      
-      // 检查事件类型
-      if (typeof assert === 'string') {
-        // 简单断言，如 "event.type != TIME_REVERSE"
-        if (assert.includes('event.type !=')) {
-          const forbiddenType = assert.split('!=')[1].trim();
-          for (const event of events) {
-            if (event.type === forbiddenType) {
-              return {
-                rule_id: rule.id,
-                rule_name: rule.name || rule.id,
-                type: 'world_rule',
-                level: rule.level || 'FATAL',
-                scope: 'WORLD',
-                message: rule.message || `违反世界观规则: ${rule.id}`,
-                suggestion: rule.suggestion || '请修正违反世界观的内容',
-                matched_condition: assert
-              };
-            }
-          }
-        }
-      }
+      if (!this.llmCaller) return null;
 
-      // 检查文本中的关键词
-      if (rule.forbid_keywords) {
-        for (const keyword of rule.forbid_keywords) {
-          if (text.includes(keyword)) {
-            return {
-              rule_id: rule.id,
-              rule_name: rule.name || rule.id,
-              type: 'world_rule',
-              level: rule.level || 'FATAL',
-              scope: 'WORLD',
-              message: rule.message || `文本包含禁止的关键词: ${keyword}`,
-              suggestion: rule.suggestion || '请移除或替换禁止的关键词',
-              matched_condition: `forbid_keywords: ${keyword}`
-            };
-          }
-        }
+      const systemPrompt = `你是一个严格的世界观规则检查器。你的任务是检查文本是否违反了给定的世界观规则。
+
+# 规则信息
+- 规则ID: ${rule.id}
+- 规则名称: ${rule.name || rule.id}
+- 规则级别: ${rule.level || 'FATAL'}
+- 规则断言: ${JSON.stringify(rule.assert, null, 2)}
+${rule.message ? `- 规则说明: ${rule.message}` : ''}
+${rule.suggestion ? `- 建议: ${rule.suggestion}` : ''}
+
+# 世界观上下文
+${JSON.stringify(context.worldRules || {}, null, 2)}
+
+# 事件列表
+${JSON.stringify(events, null, 2)}
+
+# 任务
+请仔细分析文本和规则，判断是否违反了规则。如果违反，返回详细的违规信息；如果没有违反，返回 null。
+
+# 输出格式（JSON）
+{
+  "violated": true/false,
+  "reason": "违反原因（如果 violated 为 true）",
+  "matched_condition": "匹配的条件描述",
+  "location": "违规位置（如段落、句子等）"
+}`;
+
+      const userPrompt = `# 待检查的文本
+
+${text}
+
+请检查这段文本是否违反了上述世界观规则。`;
+
+      const result = await this.llmCaller({
+        systemPrompt,
+        userPrompt,
+        temperature: 0.1,
+        maxTokens: 500
+      });
+
+      const response = this.parseLLMResponse(result);
+      if (response && response.violated) {
+        return {
+          rule_id: rule.id,
+          rule_name: rule.name || rule.id,
+          type: 'world_rule',
+          level: rule.level || 'FATAL',
+          scope: 'WORLD',
+          message: rule.message || response.reason || `违反世界观规则: ${rule.id}`,
+          suggestion: rule.suggestion || '请修正违反世界观的内容',
+          matched_condition: response.matched_condition || JSON.stringify(rule.assert),
+          location: response.location
+        };
       }
 
       return null;
@@ -211,88 +403,72 @@ class DSLRuleEngine {
   }
 
   /**
-   * 评估人物规则（增强版：支持状态机验证）
+   * 评估人物规则（LLM 驱动）
    */
   async evaluateCharacterRule(rule, text, context, stateTransitions) {
     try {
-      const assert = rule.assert;
+      if (!this.llmCaller) return null;
 
-      // 检查状态迁移（如：禁止 Dead -> Alive）
-      if (assert?.forbid?.character?.state_transition) {
-        const forbiddenTransition = assert.forbid.character.state_transition;
-        const [fromState, toState] = forbiddenTransition.split(' -> ').map(s => s.trim());
-        
-        for (const transition of stateTransitions) {
-          if (transition.type === 'character') {
-            // 增强：支持模糊匹配（如 "Dead" 匹配 "Dead"、"死亡" 等）
-            const fromMatch = this.matchState(transition.from, fromState);
-            const toMatch = this.matchState(transition.to, toState);
-            
-            if (fromMatch && toMatch) {
-              // 额外验证：检查状态迁移是否合法
-              const validation = this.validateStateTransition(transition, context);
-              if (!validation.valid) {
-                return {
-                  rule_id: rule.id,
-                  rule_name: rule.name || rule.id,
-                  type: 'STATE_RULE',
-                  level: rule.level || 'ERROR',
-                  scope: 'CHARACTER',
-                  message: rule.message || `禁止的状态迁移: ${forbiddenTransition}`,
-                  suggestion: rule.suggestion || validation.suggestion || '请修正状态迁移',
-                  matched_condition: `state_transition: ${forbiddenTransition}`,
-                  validation_error: validation.reason
-                };
-              }
+      const systemPrompt = `你是一个严格的人物规则检查器。你的任务是检查文本中的人物行为、状态迁移是否符合角色设定和规则。
 
-              return {
-                rule_id: rule.id,
-                rule_name: rule.name || rule.id,
-                type: 'STATE_RULE',
-                level: rule.level || 'ERROR',
-                scope: 'CHARACTER',
-                message: rule.message || `禁止的状态迁移: ${forbiddenTransition}`,
-                suggestion: rule.suggestion || '请修正状态迁移',
-                matched_condition: `state_transition: ${forbiddenTransition}`
-              };
-            }
-          }
-        }
-      }
+# 规则信息
+- 规则ID: ${rule.id}
+- 规则名称: ${rule.name || rule.id}
+- 规则级别: ${rule.level || 'ERROR'}
+- 规则断言: ${JSON.stringify(rule.assert, null, 2)}
+${rule.message ? `- 规则说明: ${rule.message}` : ''}
+${rule.suggestion ? `- 建议: ${rule.suggestion}` : ''}
 
-      // 检查性格一致性（if-then 规则）
-      if (assert?.if && assert?.then) {
-        // 需要结合 LLM 或更复杂的逻辑判断
-        // 这里简化处理，实际应该检查文本中的情感/行为
-        const ifCondition = assert.if;
-        const thenCondition = assert.then;
-        
-        // 如果检测到 if 条件，检查 then 条件是否违反
-        if (ifCondition.includes('character.traits.contains')) {
-          const trait = ifCondition.match(/'([^']+)'/)?.[1];
-          if (trait && context.characters) {
-            for (const char of context.characters) {
-              if (char.personality?.traits?.includes(trait)) {
-                // 检查文本是否违反 then 条件
-                if (thenCondition.includes('text.emotion !=')) {
-                  const forbiddenEmotion = thenCondition.match(/'([^']+)'/)?.[1];
-                  if (forbiddenEmotion && text.includes(forbiddenEmotion)) {
-                    return {
-                      rule_id: rule.id,
-                      rule_name: rule.name || rule.id,
-                      type: 'character',
-                      level: rule.level || 'ERROR',
-                      scope: 'CHARACTER',
-                      message: rule.message || `角色 ${char.name} 具有 "${trait}" 特质，但文本中出现了 "${forbiddenEmotion}"`,
-                      suggestion: rule.suggestion || '请调整文本以符合角色性格',
-                      matched_condition: `trait: ${trait}, emotion: ${forbiddenEmotion}`
-                    };
-                  }
-                }
-              }
-            }
-          }
-        }
+# 角色信息
+${JSON.stringify(context.characters || [], null, 2)}
+
+# 状态迁移
+${JSON.stringify(stateTransitions, null, 2)}
+
+# 任务
+请仔细分析文本、角色设定、状态迁移和规则，判断是否违反了规则。特别注意：
+1. 角色性格一致性
+2. 状态迁移的合法性（如：死亡 -> 活着 需要特殊条件）
+3. 角色行为是否符合设定
+
+# 输出格式（JSON）
+{
+  "violated": true/false,
+  "reason": "违反原因（如果 violated 为 true）",
+  "character": "涉及的角色名称",
+  "matched_condition": "匹配的条件描述",
+  "state_transition": "状态迁移信息（如果有）",
+  "validation_error": "验证错误详情（如果有）"
+}`;
+
+      const userPrompt = `# 待检查的文本
+
+${text}
+
+请检查这段文本中的人物行为、状态迁移是否符合上述规则。`;
+
+      const result = await this.llmCaller({
+        systemPrompt,
+        userPrompt,
+        temperature: 0.1,
+        maxTokens: 500
+      });
+
+      const response = this.parseLLMResponse(result);
+      if (response && response.violated) {
+        return {
+          rule_id: rule.id,
+          rule_name: rule.name || rule.id,
+          type: 'character',
+          level: rule.level || 'ERROR',
+          scope: 'CHARACTER',
+          message: rule.message || response.reason || `违反人物规则: ${rule.id}`,
+          suggestion: rule.suggestion || '请调整文本以符合角色设定',
+          matched_condition: response.matched_condition || JSON.stringify(rule.assert),
+          character: response.character,
+          state_transition: response.state_transition,
+          validation_error: response.validation_error
+        };
       }
 
       return null;
@@ -303,32 +479,66 @@ class DSLRuleEngine {
   }
 
   /**
-   * 评估历史一致性规则
+   * 评估历史一致性规则（LLM 驱动）
    */
   async evaluateHistoryRule(rule, events, context) {
     try {
-      const assert = rule.assert;
+      if (!this.llmCaller) return null;
 
-      // 检查事件是否与历史矛盾
-      if (typeof assert === 'string' && assert.includes('must_not_contradict')) {
-        // 简化处理：检查是否有重复或矛盾的事件
-        const eventTypes = new Set();
-        for (const event of events) {
-          if (eventTypes.has(event.type)) {
-            // 发现重复事件类型，可能是矛盾
-            return {
-              rule_id: rule.id,
-              rule_name: rule.name || rule.id,
-              type: 'history',
-              level: rule.level || 'FATAL',
-              scope: 'HISTORY',
-              message: rule.message || '事件与历史记录矛盾',
-              suggestion: rule.suggestion || '请检查事件是否与已有历史冲突',
-              matched_condition: `contradict: ${event.type}`
-            };
-          }
-          eventTypes.add(event.type);
-        }
+      const systemPrompt = `你是一个严格的历史一致性检查器。你的任务是检查事件是否与已有历史记录矛盾。
+
+# 规则信息
+- 规则ID: ${rule.id}
+- 规则名称: ${rule.name || rule.id}
+- 规则级别: ${rule.level || 'FATAL'}
+- 规则断言: ${JSON.stringify(rule.assert, null, 2)}
+${rule.message ? `- 规则说明: ${rule.message}` : ''}
+${rule.suggestion ? `- 建议: ${rule.suggestion}` : ''}
+
+# 历史记录
+${JSON.stringify(context.history || context.previousAnalyses || [], null, 2)}
+
+# 任务
+请仔细分析新事件与历史记录，判断是否存在矛盾。特别注意：
+1. 事件的时间顺序
+2. 事件的因果关系
+3. 事件的重复或冲突
+
+# 输出格式（JSON）
+{
+  "violated": true/false,
+  "reason": "违反原因（如果 violated 为 true）",
+  "contradicting_event": "矛盾的事件信息",
+  "contradicting_history": "矛盾的历史记录"
+}`;
+
+      const userPrompt = `# 新事件列表
+
+${JSON.stringify(events, null, 2)}
+
+请检查这些事件是否与历史记录矛盾。`;
+
+      const result = await this.llmCaller({
+        systemPrompt,
+        userPrompt,
+        temperature: 0.1,
+        maxTokens: 500
+      });
+
+      const response = this.parseLLMResponse(result);
+      if (response && response.violated) {
+        return {
+          rule_id: rule.id,
+          rule_name: rule.name || rule.id,
+          type: 'history',
+          level: rule.level || 'FATAL',
+          scope: 'HISTORY',
+          message: rule.message || response.reason || '事件与历史记录矛盾',
+          suggestion: rule.suggestion || '请检查事件是否与已有历史冲突',
+          matched_condition: response.contradicting_event || 'contradict',
+          contradicting_event: response.contradicting_event,
+          contradicting_history: response.contradicting_history
+        };
       }
 
       return null;
@@ -339,59 +549,67 @@ class DSLRuleEngine {
   }
 
   /**
-   * 评估 Intent 契约规则
+   * 评估 Intent 契约规则（LLM 驱动）
    */
   async evaluateIntentRule(rule, text, intent) {
     try {
+      if (!this.llmCaller) return null;
       if (!intent) return null;
 
-      const assert = rule.assert;
+      const systemPrompt = `你是一个严格的写作意图契约检查器。你的任务是检查文本是否实现了写作意图，是否违反了意图约束。
 
-      // 检查必须实现的目标
-      if (assert?.must_fulfill) {
-        for (const requirement of assert.must_fulfill) {
-          if (requirement === 'intent.goal') {
-            // 检查文本是否实现了 intent.goal
-            // 简化处理：检查文本是否包含目标关键词
-            const goal = intent.goal || '';
-            if (goal && text.length < 100) {
-              // 文本太短，可能未实现目标
-              return {
-                rule_id: rule.id,
-                rule_name: rule.name || rule.id,
-                type: 'intent',
-                level: rule.level || 'FATAL',
-                scope: 'INTENT',
-                message: rule.message || `文本可能未实现写作目标: ${goal}`,
-                suggestion: rule.suggestion || '请确保文本实现了写作意图中的目标',
-                matched_condition: 'must_fulfill: intent.goal'
-              };
-            }
-          }
-        }
-      }
+# 规则信息
+- 规则ID: ${rule.id}
+- 规则名称: ${rule.name || rule.id}
+- 规则级别: ${rule.level || 'FATAL'}
+- 规则断言: ${JSON.stringify(rule.assert, null, 2)}
+${rule.message ? `- 规则说明: ${rule.message}` : ''}
+${rule.suggestion ? `- 建议: ${rule.suggestion}` : ''}
 
-      // 检查禁止违反的约束
-      if (assert?.must_not_violate) {
-        for (const constraint of assert.must_not_violate) {
-          if (constraint === 'intent.constraints') {
-            const forbidden = intent.constraints?.forbidden || [];
-            for (const item of forbidden) {
-              if (text.includes(item)) {
-                return {
-                  rule_id: rule.id,
-                  rule_name: rule.name || rule.id,
-                  type: 'intent',
-                  level: rule.level || 'FATAL',
-                  scope: 'INTENT',
-                  message: rule.message || `文本违反了意图约束: ${item}`,
-                  suggestion: rule.suggestion || '请移除违反约束的内容',
-                  matched_condition: `violate: ${item}`
-                };
-              }
-            }
-          }
-        }
+# 写作意图
+${JSON.stringify(intent, null, 2)}
+
+# 任务
+请仔细分析文本和写作意图，判断：
+1. 文本是否实现了意图中的目标（goal）
+2. 文本是否违反了意图中的约束（constraints）
+3. 文本是否符合写作指南（writing_guidelines）
+
+# 输出格式（JSON）
+{
+  "violated": true/false,
+  "reason": "违反原因（如果 violated 为 true）",
+  "unfulfilled_goal": "未实现的目标（如果有）",
+  "violated_constraint": "违反的约束（如果有）"
+}`;
+
+      const userPrompt = `# 待检查的文本
+
+${text}
+
+请检查这段文本是否实现了写作意图，是否违反了意图约束。`;
+
+      const result = await this.llmCaller({
+        systemPrompt,
+        userPrompt,
+        temperature: 0.1,
+        maxTokens: 500
+      });
+
+      const response = this.parseLLMResponse(result);
+      if (response && response.violated) {
+        return {
+          rule_id: rule.id,
+          rule_name: rule.name || rule.id,
+          type: 'intent',
+          level: rule.level || 'FATAL',
+          scope: 'INTENT',
+          message: rule.message || response.reason || `违反意图契约: ${rule.id}`,
+          suggestion: rule.suggestion || '请确保文本实现了写作意图',
+          matched_condition: response.unfulfilled_goal || response.violated_constraint || 'intent_violation',
+          unfulfilled_goal: response.unfulfilled_goal,
+          violated_constraint: response.violated_constraint
+        };
       }
 
       return null;
@@ -402,33 +620,159 @@ class DSLRuleEngine {
   }
 
   /**
-   * 评估 Arc 推进规则
+   * 评估 Arc 推进规则（LLM 驱动）
    */
   async evaluateArcRule(rule, text, context, events) {
     try {
-      const assert = rule.assert;
+      if (!this.llmCaller) return null;
 
-      // 检查 Arc 阶段是否变化或加强
-      if (assert?.['arc.phase'] === 'must_change_or_intensify') {
-        // 简化处理：检查是否有新事件或情节推进
-        if (events.length === 0 && text.length < 200) {
-          // 没有事件且文本较短，可能是水文
-          return {
-            rule_id: rule.id,
-            rule_name: rule.name || rule.id,
-            type: 'arc',
-            level: rule.level || 'ERROR',
-            scope: 'ARC',
-            message: rule.message || 'Arc 阶段未推进，可能为水文',
-            suggestion: rule.suggestion || '请增加情节推进或事件',
-            matched_condition: 'arc.phase: must_change_or_intensify'
-          };
-        }
+      const systemPrompt = `你是一个严格的剧情推进检查器。你的任务是检查文本是否推进了剧情 Arc。
+
+# 规则信息
+- 规则ID: ${rule.id}
+- 规则名称: ${rule.name || rule.id}
+- 规则级别: ${rule.level || 'ERROR'}
+- 规则断言: ${JSON.stringify(rule.assert, null, 2)}
+${rule.message ? `- 规则说明: ${rule.message}` : ''}
+${rule.suggestion ? `- 建议: ${rule.suggestion}` : ''}
+
+# 剧情上下文
+${JSON.stringify(context.plotState || {}, null, 2)}
+
+# 任务
+请仔细分析文本和事件，判断：
+1. Arc 阶段是否发生变化或加强
+2. 是否有新的事件或情节推进
+3. 是否存在水文（无意义的填充内容）
+
+# 输出格式（JSON）
+{
+  "violated": true/false,
+  "reason": "违反原因（如果 violated 为 true）",
+  "arc_progress": "Arc 推进情况",
+  "is_padding": "是否为水文（true/false）"
+}`;
+
+      const userPrompt = `# 待检查的文本
+
+${text}
+
+# 事件列表
+
+${JSON.stringify(events, null, 2)}
+
+请检查这段文本是否推进了剧情 Arc。`;
+
+      const result = await this.llmCaller({
+        systemPrompt,
+        userPrompt,
+        temperature: 0.1,
+        maxTokens: 500
+      });
+
+      const response = this.parseLLMResponse(result);
+      if (response && response.violated) {
+        return {
+          rule_id: rule.id,
+          rule_name: rule.name || rule.id,
+          type: 'arc',
+          level: rule.level || 'ERROR',
+          scope: 'ARC',
+          message: rule.message || response.reason || 'Arc 阶段未推进',
+          suggestion: rule.suggestion || '请增加情节推进或事件',
+          matched_condition: response.arc_progress || 'arc.phase: must_change_or_intensify',
+          arc_progress: response.arc_progress,
+          is_padding: response.is_padding
+        };
       }
 
       return null;
     } catch (error) {
       console.error(`评估 Arc 规则失败: ${rule.id}`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 验证状态迁移（LLM 驱动）
+   */
+  async validateStateTransition(transition, context) {
+    try {
+      if (!this.llmCaller) {
+        return { valid: true }; // 如果没有 LLM，默认通过
+      }
+
+      const systemPrompt = `你是一个严格的状态迁移验证器。你的任务是验证角色状态迁移是否合法。
+
+# 状态迁移信息
+${JSON.stringify(transition, null, 2)}
+
+# 角色信息
+${JSON.stringify(context.characters || [], null, 2)}
+
+# 任务
+请仔细分析状态迁移，判断：
+1. 状态迁移是否合法（如：死亡 -> 活着 需要特殊条件）
+2. 状态迁移是否符合角色设定
+3. 状态迁移是否需要特殊条件（如：复活法术、时间倒流等）
+
+# 输出格式（JSON）
+{
+  "valid": true/false,
+  "reason": "验证结果说明",
+  "suggestion": "建议（如果 valid 为 false）",
+  "required_conditions": ["需要的条件列表（如果有）"],
+  "valid_options": ["合法的状态迁移选项（如果有）"]
+}`;
+
+      const userPrompt = `请验证这个状态迁移是否合法。`;
+
+      const result = await this.llmCaller({
+        systemPrompt,
+        userPrompt,
+        temperature: 0.1,
+        maxTokens: 400
+      });
+
+      const response = this.parseLLMResponse(result);
+      return response || { valid: true };
+    } catch (error) {
+      console.error('验证状态迁移失败:', error);
+      return { valid: true }; // 出错时默认通过，避免阻塞
+    }
+  }
+
+  /**
+   * 解析 LLM 响应
+   */
+  parseLLMResponse(result) {
+    try {
+      let responseText = '';
+      
+      if (typeof result === 'string') {
+        responseText = result;
+      } else if (result && result.response) {
+        responseText = typeof result.response === 'string' 
+          ? result.response 
+          : JSON.stringify(result.response);
+      } else if (result && result.text) {
+        responseText = result.text;
+      } else {
+        return null;
+      }
+
+      // 尝试提取 JSON
+      const jsonMatch = responseText.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || 
+                       responseText.match(/(\{[\s\S]*\})/);
+      
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[1]);
+      }
+
+      // 如果无法解析 JSON，尝试从文本中提取信息
+      return null;
+    } catch (error) {
+      console.error('解析 LLM 响应失败:', error);
       return null;
     }
   }
@@ -462,191 +806,6 @@ class DSLRuleEngine {
       }
     };
   }
-
-  /**
-   * 验证状态迁移（增强版：状态机验证）
-   * @param {Object} transition - 状态迁移 { type, entity, from, to }
-   * @param {Object} context - 上下文
-   */
-  validateStateTransition(transition, context) {
-    const { type, entity, from, to } = transition;
-
-    if (type === 'character') {
-      // 获取角色信息
-      const char = context.characters?.find(c => c.name === entity);
-      if (!char) {
-        return { 
-          valid: true, // 角色不存在时，不阻止（可能是在创建新角色）
-          reason: '角色不存在'
-        };
-      }
-
-      // 检查状态迁移是否合法
-      const validTransitions = this.getValidStateTransitions(char, from);
-      if (validTransitions.length > 0 && !validTransitions.includes(to)) {
-        return { 
-          valid: false, 
-          reason: `不允许的状态迁移: ${from} -> ${to}`,
-          suggestion: `合法的状态迁移: ${validTransitions.join(', ')}`,
-          validOptions: validTransitions
-        };
-      }
-
-      // 检查状态迁移条件
-      const conditions = this.getStateTransitionConditions(char, from, to);
-      if (conditions.length > 0) {
-        const unmetConditions = conditions.filter(c => !this.checkCondition(c, context));
-        if (unmetConditions.length > 0) {
-          return { 
-            valid: false, 
-            reason: '状态迁移条件不满足',
-            suggestion: `需要满足的条件: ${unmetConditions.map(c => c.description || c).join(', ')}`,
-            requiredConditions: unmetConditions
-          };
-        }
-      }
-    }
-
-    return { valid: true };
-  }
-
-  /**
-   * 获取合法的状态迁移
-   */
-  getValidStateTransitions(character, fromState) {
-    // 定义状态机：合法的状态迁移
-    const stateMachine = {
-      // 生命状态
-      'Alive': ['Injured', 'Dead', 'Unconscious', 'Alive'], // 可以保持 Alive
-      'Injured': ['Alive', 'Dead', 'Unconscious', 'Injured'], // 可以保持 Injured
-      'Unconscious': ['Alive', 'Injured', 'Dead', 'Unconscious'], // 可以保持 Unconscious
-      'Dead': [], // 死亡是终态，不允许迁移
-      
-      // 境界状态（简化：只检查倒退）
-      // 这里需要根据实际的境界体系来定义
-    };
-
-    // 检查是否是生命状态
-    const lifeStates = ['Alive', 'Injured', 'Dead', 'Unconscious', 'Alive', '死亡', '受伤', '昏迷'];
-    const isLifeState = lifeStates.some(s => fromState.includes(s) || s.includes(fromState));
-
-    if (isLifeState) {
-      // 标准化状态名称
-      let normalizedFrom = fromState;
-      if (fromState.includes('死亡') || fromState === 'Dead') {
-        normalizedFrom = 'Dead';
-      } else if (fromState.includes('受伤') || fromState === 'Injured') {
-        normalizedFrom = 'Injured';
-      } else if (fromState.includes('昏迷') || fromState === 'Unconscious') {
-        normalizedFrom = 'Unconscious';
-      } else {
-        normalizedFrom = 'Alive';
-      }
-
-      return stateMachine[normalizedFrom] || [];
-    }
-
-    // 对于其他状态（如境界），允许所有迁移（由其他规则检查）
-    return [];
-  }
-
-  /**
-   * 获取状态迁移条件
-   */
-  getStateTransitionConditions(character, fromState, toState) {
-    const conditions = [];
-
-    // 死亡 -> 其他状态：需要特殊条件（如：复活法术、时间倒流等）
-    if ((fromState.includes('死亡') || fromState === 'Dead') && 
-        !(toState.includes('死亡') || toState === 'Dead')) {
-      conditions.push({
-        type: 'special_condition',
-        description: '需要复活条件（如：复活法术、时间倒流、假死等）',
-        check: (context) => {
-          // 检查是否有复活相关的事件
-          const events = context.events || [];
-          return events.some(e => 
-            e.type === 'REVIVAL' || 
-            e.type === 'TIME_REVERSE' ||
-            e.description?.includes('复活') ||
-            e.description?.includes('重生')
-          );
-        }
-      });
-    }
-
-    // 境界提升：需要修炼条件
-    if (this.isLevelUp(fromState, toState)) {
-      conditions.push({
-        type: 'cultivation_condition',
-        description: '需要修炼或突破条件',
-        check: (context) => {
-          const events = context.events || [];
-          return events.some(e => 
-            e.type === 'LEVEL_UP' || 
-            e.type === 'BREAKTHROUGH' ||
-            e.description?.includes('突破') ||
-            e.description?.includes('修炼')
-          );
-        }
-      });
-    }
-
-    return conditions;
-  }
-
-  /**
-   * 检查条件
-   */
-  checkCondition(condition, context) {
-    if (typeof condition.check === 'function') {
-      return condition.check(context);
-    }
-    return true; // 默认通过
-  }
-
-  /**
-   * 判断是否是境界提升
-   */
-  isLevelUp(fromLevel, toLevel) {
-    const levelOrder = ['炼气', '筑基', '金丹', '元婴', '化神', '炼虚', '合体', '大乘', '渡劫'];
-    
-    const fromIndex = levelOrder.findIndex(l => fromLevel.includes(l));
-    const toIndex = levelOrder.findIndex(l => toLevel.includes(l));
-    
-    return fromIndex >= 0 && toIndex >= 0 && toIndex > fromIndex;
-  }
-
-  /**
-   * 匹配状态（支持模糊匹配）
-   */
-  matchState(actualState, targetState) {
-    if (!actualState || !targetState) return false;
-    
-    // 完全匹配
-    if (actualState === targetState) return true;
-    
-    // 包含匹配
-    if (actualState.includes(targetState) || targetState.includes(actualState)) return true;
-    
-    // 同义词匹配
-    const synonyms = {
-      'Dead': ['死亡', '死', '已死'],
-      'Alive': ['活着', '生存', '存活'],
-      'Injured': ['受伤', '伤势', '负伤'],
-      'Unconscious': ['昏迷', '失去意识', '不省人事']
-    };
-
-    for (const [key, values] of Object.entries(synonyms)) {
-      if ((actualState === key || values.includes(actualState)) &&
-          (targetState === key || values.includes(targetState))) {
-        return true;
-      }
-    }
-
-    return false;
-  }
 }
 
 module.exports = DSLRuleEngine;
-
