@@ -402,31 +402,308 @@ class MemoryManager {
 
   /**
    * 加载上下文（供 Agent 使用）
-   * @param {Object} request - 用户请求
+   * @param {Object|string} request - 用户请求或配置对象
+   * @param {Object} options - 选项
+   * @param {string} options.perspective - 视角类型: 'omniscient' | 'limited' | 'first_person'
+   * @param {string} options.perspectiveCharacter - 视角角色（limited 时使用）
+   * @param {number} options.chapter - 当前章节号
    */
-  async loadContext(request) {
+  async loadContext(request, options = {}) {
     this.checkInitialized();
 
+    // 解析请求
+    const requestStr = typeof request === 'string' ? request : request.text || '';
+    const perspective = options.perspective || this.detectPerspective(requestStr);
+    const perspectiveCharacter = options.perspectiveCharacter || this.extractPerspectiveCharacter(requestStr);
+    const chapter = options.chapter || this.getCurrentChapter();
+
+    // 加载基础数据
+    const worldRules = this.world.getRules();
+    const plotState = this.plot.getCurrentState();
+    const allFacts = this.getAllFacts();
+    const allForeshadows = this.getAllForeshadows();
+    const characterStates = this.characterStateKnowledge.getAllCharactersSummary();
+
+    // 构建 Narrative Context
     const context = {
-      world_rules: this.world.getRules(),
-      characters: [],
-      plot_state: this.plot.getCurrentState(),
-      foreshadows: {
-        pending: this.foreshadow.getPendingForeshadows(),
-        revealed: this.foreshadow.getRevealedForeshadows()
-      }
+      world_rules: worldRules,
+      visible_characters: [],
+      plot_progress: plotState,
+      available_foreshadows: [],
+      forbidden_knowledge: [],
+      narrative_constraints: {
+        cannot_happen: [],
+        must_respect: []
+      },
+      perspective: {
+        type: perspective,
+        character: perspectiveCharacter || null
+      },
+      chapter: chapter
     };
 
-    // 提取请求中提到的角色
-    const mentionedChars = this.extractMentionedCharacters(request);
-    if (mentionedChars.length > 0) {
-      context.characters = this.character.getRelevantContext(mentionedChars);
+    // 1. 过滤事实（按章节和置信度）
+    const visibleFacts = this.filterFactsByNarrative(allFacts, chapter, perspective, perspectiveCharacter);
+    context.visible_facts = visibleFacts;
+
+    // 2. 过滤角色（基于视角）
+    const mentionedChars = this.extractMentionedCharacters(requestStr);
+    if (perspective === 'limited' && perspectiveCharacter) {
+      // 限制视角：只显示该角色知道的信息
+      context.visible_characters = this.getCharacterContextLimited(perspectiveCharacter, chapter);
+    } else if (mentionedChars.length > 0) {
+      context.visible_characters = this.character.getRelevantContext(mentionedChars);
     } else {
-      // 如果没有明确提到，加载主要角色
-      context.characters = this.character.getMainCharacters();
+      context.visible_characters = this.character.getMainCharacters();
     }
 
+    // 3. 过滤伏笔（按状态和视角）
+    context.available_foreshadows = this.filterForeshadowsByNarrative(
+      allForeshadows,
+      chapter,
+      perspective,
+      perspectiveCharacter
+    );
+
+    // 4. 构建叙事约束
+    context.narrative_constraints = this.buildNarrativeConstraints(
+      visibleFacts,
+      context.available_foreshadows,
+      perspective,
+      perspectiveCharacter,
+      chapter
+    );
+
+    // 5. 添加禁止知识（角色不应该知道的信息）
+    context.forbidden_knowledge = this.getForbiddenKnowledge(
+      allFacts,
+      visibleFacts,
+      allForeshadows,
+      context.available_foreshadows,
+      perspective,
+      perspectiveCharacter
+    );
+
     return context;
+  }
+
+  /**
+   * 检测视角类型
+   */
+  detectPerspective(request) {
+    if (!request || typeof request !== 'string') {
+      return 'omniscient';
+    }
+    
+    const lower = request.toLowerCase();
+    if (lower.includes('第一人称') || lower.includes('我') || lower.includes('first person')) {
+      return 'first_person';
+    }
+    if (lower.includes('限制视角') || lower.includes('limited') || lower.includes('视角')) {
+      return 'limited';
+    }
+    return 'omniscient';
+  }
+
+  /**
+   * 提取视角角色
+   */
+  extractPerspectiveCharacter(request) {
+    if (!request || typeof request !== 'string') {
+      return null;
+    }
+    
+    // 尝试从请求中提取角色名
+    const allChars = this.character.getAllCharacters();
+    for (const char of allChars) {
+      if (request.includes(char.name)) {
+        return char.name;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 获取当前章节号
+   */
+  getCurrentChapter() {
+    const storyState = this.getStoryState();
+    return storyState.chapter || 0;
+  }
+
+  /**
+   * 按叙事规则过滤事实
+   */
+  filterFactsByNarrative(facts, chapter, perspective, perspectiveCharacter) {
+    return facts.filter(fact => {
+      // 只包含该章节之前或当前章节的事实
+      if (fact.introduced_at?.chapter > chapter) {
+        return false;
+      }
+      
+      // 限制视角：只包含该角色可能知道的事实
+      if (perspective === 'limited' && perspectiveCharacter) {
+        // 如果事实涉及该角色，则可见
+        if (fact.subject === perspectiveCharacter) {
+          return true;
+        }
+        // 如果事实发生在该角色在场的地方，则可见
+        // 这里简化处理，实际应该检查位置信息
+        return true; // 暂时全部可见，后续可以优化
+      }
+      
+      return true;
+    });
+  }
+
+  /**
+   * 获取限制视角的角色上下文
+   */
+  getCharacterContextLimited(characterName, chapter) {
+    const char = this.character.getCharacter(characterName);
+    if (!char) {
+      return [];
+    }
+
+    // 获取该角色的当前状态
+    const state = this.characterStateKnowledge.getCharacterCurrentStateMerged(characterName);
+    
+    return [{
+      ...char,
+      current_state: state?.current || char.current_state,
+      known_facts: this.getCharacterKnownFacts(characterName, chapter),
+      known_characters: this.getCharacterKnownCharacters(characterName, chapter)
+    }];
+  }
+
+  /**
+   * 获取角色已知的事实
+   */
+  getCharacterKnownFacts(characterName, chapter) {
+    const allFacts = this.getAllFacts();
+    return allFacts.filter(fact => {
+      // 涉及该角色的事实
+      if (fact.subject === characterName) {
+        return true;
+      }
+      // 该角色在场时发生的事实（简化处理）
+      return fact.introduced_at?.chapter <= chapter;
+    });
+  }
+
+  /**
+   * 获取角色已知的其他角色
+   */
+  getCharacterKnownCharacters(characterName, chapter) {
+    const allChars = this.character.getAllCharacters();
+    const char = this.character.getCharacter(characterName);
+    if (!char) {
+      return [];
+    }
+
+    // 返回有关系的角色
+    return allChars.filter(c => {
+      if (c.name === characterName) return false;
+      if (char.relationships?.[c.name]) return true;
+      return true; // 简化处理
+    });
+  }
+
+  /**
+   * 按叙事规则过滤伏笔
+   */
+  filterForeshadowsByNarrative(foreshadows, chapter, perspective, perspectiveCharacter) {
+    return foreshadows.map(fs => {
+      const isRevealed = fs.state === 'revealed' || fs.state === 'archived';
+      const isPending = fs.state === 'pending';
+      
+      // 未揭示的伏笔：只给 hint，不给 detail
+      if (isPending) {
+        return {
+          id: fs.id || fs.concept_id,
+          hint_only: true,
+          detail_visible: false,
+          state: fs.state,
+          introduced_in: fs.introduced_in
+        };
+      }
+      
+      // 已揭示的伏笔：可以给完整信息
+      return {
+        id: fs.id || fs.concept_id,
+        hint_only: false,
+        detail_visible: true,
+        state: fs.state,
+        introduced_in: fs.introduced_in,
+        implied_future: fs.implied_future
+      };
+    });
+  }
+
+  /**
+   * 构建叙事约束
+   */
+  buildNarrativeConstraints(facts, foreshadows, perspective, perspectiveCharacter, chapter) {
+    const constraints = {
+      cannot_happen: [],
+      must_respect: []
+    };
+
+    // 基于事实的约束
+    for (const fact of facts) {
+      if (fact.type === 'character_death' && fact.status === 'valid') {
+        constraints.cannot_happen.push(`${fact.subject} 死亡`);
+      }
+    }
+
+    // 基于视角的约束
+    if (perspective === 'limited' && perspectiveCharacter) {
+      constraints.must_respect.push(`${perspectiveCharacter} 尚未知道某些信息`);
+      
+      // 未揭示的伏笔：角色不应该明确知道
+      for (const fs of foreshadows) {
+        if (fs.hint_only && !fs.detail_visible) {
+          constraints.must_respect.push(`伏笔 ${fs.id} 尚未揭示，只能暗示`);
+        }
+      }
+    }
+
+    return constraints;
+  }
+
+  /**
+   * 获取禁止知识（角色不应该知道的信息）
+   */
+  getForbiddenKnowledge(allFacts, visibleFacts, allForeshadows, availableForeshadows, perspective, perspectiveCharacter) {
+    const forbidden = [];
+
+    if (perspective === 'limited' && perspectiveCharacter) {
+      // 找出不可见的事实
+      const visibleFactIds = new Set(visibleFacts.map(f => f.id));
+      for (const fact of allFacts) {
+        if (!visibleFactIds.has(fact.id)) {
+          forbidden.push({
+            type: 'fact',
+            id: fact.id,
+            reason: `${perspectiveCharacter} 不应该知道此信息`
+          });
+        }
+      }
+
+      // 找出不可见的伏笔详情
+      for (const fs of allForeshadows) {
+        const available = availableForeshadows.find(af => af.id === (fs.id || fs.concept_id));
+        if (available && available.hint_only) {
+          forbidden.push({
+            type: 'foreshadow',
+            id: fs.id || fs.concept_id,
+            reason: '伏笔尚未揭示，只能暗示'
+          });
+        }
+      }
+    }
+
+    return forbidden;
   }
 
   /**
@@ -692,11 +969,12 @@ class MemoryManager {
   /**
    * 结算章节（将 ChapterExtract 合并到 Knowledge Core）
    * @param {number} chapterNumber - 章节号
+   * @param {boolean} replaceChapter - 是否替换章节（回滚旧效果）
    */
-  async finalizeChapter(chapterNumber) {
+  async finalizeChapter(chapterNumber, replaceChapter = false) {
     this.checkInitialized();
     try {
-      await this.chapterFinalizer.finalizeChapter(chapterNumber);
+      await this.chapterFinalizer.finalizeChapter(chapterNumber, replaceChapter);
       return { success: true };
     } catch (error) {
       console.error(`❌ 结算第 ${chapterNumber} 章失败:`, error);
@@ -807,6 +1085,90 @@ class MemoryManager {
    */
   getAllForeshadows() {
     return this.readCoreFile('foreshadows.json', []);
+  }
+
+  /**
+   * 获取章节效果
+   */
+  getChapterEffect(chapterNumber) {
+    const ChapterEffectManager = require('./finalizer/chapterEffectManager');
+    const effectManager = new ChapterEffectManager(this.workspaceRoot);
+    return effectManager.loadEffect(chapterNumber);
+  }
+
+  /**
+   * 获取依赖此章节的后续章节
+   */
+  getDependentChapters(chapterNumber) {
+    const ChapterEffectManager = require('./finalizer/chapterEffectManager');
+    const effectManager = new ChapterEffectManager(this.workspaceRoot);
+    return effectManager.getDependentChapters(chapterNumber);
+  }
+
+  /**
+   * 回滚章节
+   */
+  async rollbackChapter(chapterNumber) {
+    this.checkInitialized();
+    try {
+      await this.chapterFinalizer.rollbackChapter(chapterNumber);
+      return { success: true };
+    } catch (error) {
+      console.error(`❌ 回滚第 ${chapterNumber} 章失败:`, error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 获取推断列表
+   */
+  getInferences(chapterNumber = null) {
+    const InferenceStore = require('./finalizer/inferenceStore');
+    const inferenceStore = new InferenceStore(this.workspaceRoot);
+    if (chapterNumber) {
+      return inferenceStore.getInferencesByChapter(chapterNumber);
+    }
+    return inferenceStore.getPendingInferences();
+  }
+
+  /**
+   * 获取依赖图（用于可视化）
+   */
+  getDependencyGraph() {
+    this.checkInitialized();
+    const DependencyTracker = require('./finalizer/dependencyTracker');
+    const tracker = new DependencyTracker(this.workspaceRoot);
+    return tracker.getDependencyGraph();
+  }
+
+  /**
+   * 获取失效章节列表
+   */
+  getInvalidatedChapters() {
+    this.checkInitialized();
+    const DependencyTracker = require('./finalizer/dependencyTracker');
+    const tracker = new DependencyTracker(this.workspaceRoot);
+    return tracker.getInvalidatedChapters();
+  }
+
+  /**
+   * 检查章节是否失效
+   */
+  isChapterInvalidated(chapterNumber) {
+    this.checkInitialized();
+    const DependencyTracker = require('./finalizer/dependencyTracker');
+    const tracker = new DependencyTracker(this.workspaceRoot);
+    return tracker.isChapterInvalidated(chapterNumber);
+  }
+
+  /**
+   * 获取章节的依赖信息
+   */
+  getChapterDependencies(chapterNumber) {
+    this.checkInitialized();
+    const DependencyTracker = require('./finalizer/dependencyTracker');
+    const tracker = new DependencyTracker(this.workspaceRoot);
+    return tracker.getChapterDependencies(chapterNumber);
   }
 
   /**

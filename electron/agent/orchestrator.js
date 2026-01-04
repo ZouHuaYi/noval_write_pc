@@ -105,7 +105,7 @@ class AgentOrchestrator {
       this.emotionCurveManager = new EmotionCurveManager();
       this.densityController = new DensityController();
       this.sceneStructurePlanner = new SceneStructurePlanner();
-      this.consistencyChecker = new ConsistencyChecker(this.dslRuleEngine); // 使用 DSL 规则引擎
+      this.consistencyChecker = new ConsistencyChecker(this.dslRuleEngine, this.memory); // 使用 DSL 规则引擎，传入记忆管理器
       this.rewriter = new RewriteAgent();
       this.memoryUpdater = new MemoryUpdater(this.memory, this.workspaceRoot); // 传入 workspaceRoot
       this.contextLoader = new ContextLoader(this.workspaceRoot, this.fileScanner, this.chapterFileManager, this.memory); // 智能上下文加载器（传入 memory 用于获取设定文件）

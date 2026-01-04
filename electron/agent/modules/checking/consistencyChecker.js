@@ -13,8 +13,9 @@ const { safeParseJSON } = require('../../../utils/jsonParser');
 const EventExtractor = require('../analysis/eventExtractor');
 
 class ConsistencyChecker {
-  constructor(ruleEngine) {
+  constructor(ruleEngine, memoryManager = null) {
     this.ruleEngine = ruleEngine; // DSL 规则引擎
+    this.memoryManager = memoryManager; // 记忆管理器
     this.eventExtractor = new EventExtractor();
     this.systemPrompt = this.buildSystemPrompt();
   }
@@ -113,7 +114,7 @@ class ConsistencyChecker {
   }
 
   /**
-   * 执行一致性校验（4层架构）
+   * 执行一致性校验（简化版）
    * @param {string} text - 待校验的文本
    * @param {Object} intent - 写作意图
    * @param {Object} context - 记忆上下文
@@ -121,57 +122,61 @@ class ConsistencyChecker {
    */
   async check(text, intent, context, llmCaller) {
     try {
-      console.log('🔍 开始一致性校验（4层架构）...');
+      console.log('🔍 开始一致性校验...');
 
-      // 步骤 1: 事件抽取（临时，不写回记忆）
-      console.log('📊 步骤 1/5: 抽取事件和状态迁移...');
-      const extracted = await this.eventExtractor.extract(text, context, llmCaller);
-      const { events, state_transitions } = extracted;
-      console.log(`   抽取到 ${events.length} 个事件, ${state_transitions.length} 个状态迁移`);
+      // 1. 从记忆系统获取数据
+      const memoryData = await this.getMemoryData();
 
-      // 步骤 2-5: 4层校验
-      const layerResults = {
-        text: null,      // 第1层：文本层
-        state: null,   // 第2层：状态层
-        intent: null,  // 第3层：契约层
-        arc: null      // 第4层：叙事推进层
-      };
+      // 2. 使用 LLM 进行统一校验
+      const checkResult = await this.checkWithLLM(text, intent, context, memoryData, llmCaller);
 
-      // 第1层：TextRuleCheck（文本层）
-      console.log('📝 步骤 2/5: TextRuleCheck（文本层）...');
-      layerResults.text = await this.checkTextLayer(text, context, llmCaller);
+      // 3. 如果有规则引擎，也检查规则（可选）
+      if (this.ruleEngine && this.ruleEngine.llmCaller) {
+        try {
+          const ruleViolations = await this.ruleEngine.checkRules({
+            text,
+            intent,
+            context: { ...context, ...memoryData },
+            events: [],
+            stateTransitions: []
+          });
+          
+          // 合并规则引擎的问题
+          if (ruleViolations && ruleViolations.length > 0) {
+            for (const violation of ruleViolations) {
+              checkResult.errors.push({
+                type: violation.type || 'rule_violation',
+                severity: this.mapLevelToSeverity(violation.level),
+                location: '文本中',
+                message: violation.message,
+                suggestion: violation.suggestion || '请检查并修正',
+                rule_id: violation.rule_id
+              });
+            }
+          }
+        } catch (error) {
+          console.warn('规则引擎检查失败:', error.message);
+        }
+      }
 
-      // 第2层：StateRuleCheck（状态层）
-      console.log('🔄 步骤 3/5: StateRuleCheck（状态层）...');
-      layerResults.state = await this.checkStateLayer(text, context, events, state_transitions);
+      // 4. 计算最终状态和评分
+      const hasCritical = checkResult.errors.some(e => e.severity === 'critical' || e.severity === 'high');
+      checkResult.status = hasCritical ? 'fail' : 'pass';
+      
+      // 计算评分
+      let score = 100;
+      for (const error of checkResult.errors) {
+        if (error.severity === 'critical') score -= 20;
+        else if (error.severity === 'high') score -= 10;
+        else if (error.severity === 'medium') score -= 5;
+        else score -= 2;
+      }
+      checkResult.overall_score = Math.max(0, score);
 
-      // 第3层：IntentContractCheck（契约层）
-      console.log('🎯 步骤 4/5: IntentContractCheck（契约层）...');
-      layerResults.intent = await this.checkIntentLayer(text, intent, context);
+      console.log(`✅ 一致性校验完成 - 状态: ${checkResult.status}, 评分: ${checkResult.overall_score}`);
+      console.log(`   发现 ${checkResult.errors.length} 个问题`);
 
-      // 第4层：ArcProgressCheck（叙事推进层）
-      console.log('📈 步骤 5/5: ArcProgressCheck（叙事推进层）...');
-      layerResults.arc = await this.checkArcLayer(text, context, events);
-
-      // 合并4层结果
-      const finalResult = this.mergeLayerResults(layerResults);
-
-      // 如果有致命错误或错误，状态为 fail
-      const hasFatal = finalResult.errors.some(e => e.severity === 'critical' || e.level === 'FATAL');
-      const hasError = finalResult.errors.some(e => 
-        e.severity === 'high' || e.severity === 'critical' || 
-        e.level === 'ERROR' || e.level === 'FATAL'
-      );
-
-      finalResult.status = (hasFatal || hasError) ? 'fail' : 'pass';
-
-      console.log(`✅ 一致性校验完成 - 状态: ${finalResult.status}, 评分: ${finalResult.overall_score}`);
-      console.log(`   文本层: ${layerResults.text?.errors?.length || 0} 个问题`);
-      console.log(`   状态层: ${layerResults.state?.errors?.length || 0} 个问题`);
-      console.log(`   契约层: ${layerResults.intent?.errors?.length || 0} 个问题`);
-      console.log(`   推进层: ${layerResults.arc?.errors?.length || 0} 个问题`);
-
-      return finalResult;
+      return checkResult;
 
     } catch (error) {
       console.error('❌ 一致性校验失败:', error);
@@ -182,7 +187,6 @@ class ConsistencyChecker {
         errors: [{
           type: 'logic',
           severity: 'medium',
-          level: 'ERROR',
           location: '整体',
           message: '校验过程出错: ' + error.message,
           suggestion: '请手动检查文本'
@@ -194,279 +198,49 @@ class ConsistencyChecker {
   }
 
   /**
-   * 第1层：TextRuleCheck（文本层）
-   * 检查文本本身的问题（格式、基础逻辑等）
+   * 从记忆系统获取数据
    */
-  async checkTextLayer(text, context, llmCaller) {
-    const errors = [];
-    const warnings = [];
-
-    // 使用 LLM 检查文本层问题（视角、标点、基础逻辑等）
-    try {
-      const llmResult = await this.checkWithLLM(text, null, context, [], llmCaller);
-      
-      // 只保留文本层相关的问题
-      for (const error of llmResult.errors || []) {
-        if (['pov', 'format', 'logic'].includes(error.type)) {
-          errors.push({
-            ...error,
-            layer: 'text',
-            source: 'llm'
-          });
-        }
-      }
-    } catch (error) {
-      console.error('文本层 LLM 校验失败:', error);
-    }
-
-    return {
-      layer: 'text',
-      errors,
-      warnings,
-      passed: errors.length === 0
+  async getMemoryData() {
+    const data = {
+      worldRules: {},
+      characters: [],
+      plotState: {}
     };
-  }
 
-  /**
-   * 第2层：StateRuleCheck（状态层）
-   * 检查状态迁移是否合法
-   */
-  async checkStateLayer(text, context, events, stateTransitions) {
-    const errors = [];
-    const warnings = [];
-
-    if (!this.ruleEngine) {
-      return { layer: 'state', errors, warnings, passed: true };
+    if (!this.memoryManager) {
+      return data;
     }
 
     try {
-      // 使用 DSL 规则引擎检查状态相关规则
-      const violations = await this.ruleEngine.checkRules({
-        text,
-        intent: null,
-        context,
-        events,
-        stateTransitions
-      });
+      // 获取世界观规则
+      if (this.memoryManager.world) {
+        data.worldRules = this.memoryManager.world.getRules() || {};
+      }
 
-      // 筛选状态层相关的规则（CHARACTER, WORLD 中的状态规则）
-      for (const violation of violations) {
-        if (violation.scope === 'CHARACTER' || 
-            (violation.scope === 'WORLD' && violation.type === 'state')) {
-          errors.push({
-            ...violation,
-            layer: 'state',
-            severity: this.mapLevelToSeverity(violation.level),
-            source: 'dsl_rule_engine'
-          });
-        }
+      // 获取角色信息
+      if (this.memoryManager.character) {
+        const allChars = this.memoryManager.character.getAllCharacters() || [];
+        data.characters = allChars.map(char => ({
+          name: char.name,
+          role: char.role,
+          personality: char.personality,
+          current_state: char.current_state,
+          traits: char.personality?.traits || [],
+          forbidden_traits: char.personality?.forbidden_traits || []
+        }));
+      }
+
+      // 获取剧情状态
+      if (this.memoryManager.plot) {
+        data.plotState = this.memoryManager.plot.getCurrentState() || {};
       }
     } catch (error) {
-      console.error('状态层校验失败:', error);
+      console.warn('获取记忆系统数据失败:', error.message);
     }
 
-    return {
-      layer: 'state',
-      errors,
-      warnings,
-      passed: errors.length === 0
-    };
+    return data;
   }
 
-  /**
-   * 第3层：IntentContractCheck（契约层）
-   * 检查是否满足 Intent 契约
-   */
-  async checkIntentLayer(text, intent, context) {
-    const errors = [];
-    const warnings = [];
-
-    if (!intent) {
-      return { layer: 'intent', errors, warnings, passed: true };
-    }
-
-    if (!this.ruleEngine) {
-      return { layer: 'intent', errors, warnings, passed: true };
-    }
-
-    try {
-      // 使用 DSL 规则引擎检查 Intent 契约规则
-      const violations = await this.ruleEngine.checkRules({
-        text,
-        intent,
-        context,
-        events: [],
-        stateTransitions: []
-      });
-
-      // 筛选 Intent 层相关的规则
-      for (const violation of violations) {
-        if (violation.scope === 'INTENT') {
-          errors.push({
-            ...violation,
-            layer: 'intent',
-            severity: this.mapLevelToSeverity(violation.level),
-            source: 'dsl_rule_engine'
-          });
-        }
-      }
-    } catch (error) {
-      console.error('契约层校验失败:', error);
-    }
-
-    return {
-      layer: 'intent',
-      errors,
-      warnings,
-      passed: errors.length === 0
-    };
-  }
-
-  /**
-   * 第4层：ArcProgressCheck（叙事推进层）
-   * 检查 Arc 是否推进（防水文）
-   */
-  async checkArcLayer(text, context, events) {
-    const errors = [];
-    const warnings = [];
-
-    if (!this.ruleEngine) {
-      return { layer: 'arc', errors, warnings, passed: true };
-    }
-
-    try {
-      // 使用 DSL 规则引擎检查 Arc 推进规则
-      const violations = await this.ruleEngine.checkRules({
-        text,
-        intent: null,
-        context,
-        events,
-        stateTransitions: []
-      });
-
-      // 筛选 Arc 层相关的规则
-      for (const violation of violations) {
-        if (violation.scope === 'ARC') {
-          errors.push({
-            ...violation,
-            layer: 'arc',
-            severity: this.mapLevelToSeverity(violation.level),
-            source: 'dsl_rule_engine'
-          });
-        }
-      }
-    } catch (error) {
-      console.error('推进层校验失败:', error);
-    }
-
-    return {
-      layer: 'arc',
-      errors,
-      warnings,
-      passed: errors.length === 0
-    };
-  }
-
-  /**
-   * 合并4层结果
-   */
-  mergeLayerResults(layerResults) {
-    const allErrors = [];
-    const allWarnings = [];
-
-    // 收集所有错误和警告
-    for (const layer of Object.values(layerResults)) {
-      if (layer?.errors) {
-        allErrors.push(...layer.errors);
-      }
-      if (layer?.warnings) {
-        allWarnings.push(...layer.warnings);
-      }
-    }
-
-    // 去重（基于 message）
-    const uniqueErrors = [];
-    const seen = new Set();
-    
-    for (const error of allErrors) {
-      const key = error.message || error.rule_id;
-      if (!seen.has(key)) {
-        seen.add(key);
-        uniqueErrors.push(error);
-      }
-    }
-
-    // 按严重性排序
-    const severityOrder = { 
-      critical: 0, FATAL: 0,
-      high: 1, ERROR: 1,
-      medium: 2, WARN: 2,
-      low: 3
-    };
-    uniqueErrors.sort((a, b) => {
-      const aSev = severityOrder[a.severity] ?? severityOrder[a.level] ?? 99;
-      const bSev = severityOrder[b.severity] ?? severityOrder[b.level] ?? 99;
-      return aSev - bSev;
-    });
-
-    // 计算评分
-    let score = 100;
-    for (const error of uniqueErrors) {
-      const sev = error.severity || error.level || 'medium';
-      if (sev === 'critical' || sev === 'FATAL') score -= 20;
-      else if (sev === 'high' || sev === 'ERROR') score -= 10;
-      else if (sev === 'medium' || sev === 'WARN') score -= 5;
-      else score -= 2;
-    }
-    score = Math.max(0, score);
-
-    return {
-      status: 'pass', // 将在 check() 中根据错误确定
-      overall_score: score,
-      errors: uniqueErrors,
-      warnings: allWarnings,
-      analysis: this.generateAnalysis(layerResults, uniqueErrors),
-      layer_results: layerResults,
-      statistics: {
-        total_errors: uniqueErrors.length,
-        by_layer: {
-          text: layerResults.text?.errors?.length || 0,
-          state: layerResults.state?.errors?.length || 0,
-          intent: layerResults.intent?.errors?.length || 0,
-          arc: layerResults.arc?.errors?.length || 0
-        }
-      }
-    };
-  }
-
-  /**
-   * 生成分析报告
-   */
-  generateAnalysis(layerResults, errors) {
-    const layers = [];
-    if (layerResults.text?.errors?.length > 0) layers.push('文本层');
-    if (layerResults.state?.errors?.length > 0) layers.push('状态层');
-    if (layerResults.intent?.errors?.length > 0) layers.push('契约层');
-    if (layerResults.arc?.errors?.length > 0) layers.push('推进层');
-
-    if (errors.length === 0) {
-      return '✅ 所有层校验通过，文本符合要求。';
-    }
-
-    let analysis = `发现 ${errors.length} 个问题，涉及 ${layers.join('、')}。`;
-    
-    const fatalCount = errors.filter(e => e.severity === 'critical' || e.level === 'FATAL').length;
-    const errorCount = errors.filter(e => e.severity === 'high' || e.level === 'ERROR').length;
-    
-    if (fatalCount > 0) {
-      analysis += `其中 ${fatalCount} 个致命错误必须修正。`;
-    }
-    if (errorCount > 0) {
-      analysis += `另有 ${errorCount} 个错误需要修正。`;
-    }
-
-    return analysis;
-  }
 
   /**
    * 映射规则级别到严重性
@@ -517,11 +291,15 @@ class ConsistencyChecker {
   }
 
   /**
-   * 使用 LLM 深度校验
+   * 使用 LLM 进行统一校验
    */
-  async checkWithLLM(text, intent, context, ruleViolations, llmCaller) {
+  async checkWithLLM(text, intent, context, memoryData, llmCaller) {
     try {
-      const userPrompt = this.buildCheckPrompt(text, intent, context, ruleViolations);
+      if (!llmCaller) {
+        throw new Error('LLM 调用器未设置');
+      }
+
+      const userPrompt = this.buildCheckPrompt(text, intent, context, memoryData);
 
       const result = await llmCaller({
         systemPrompt: this.systemPrompt,
@@ -538,122 +316,90 @@ class ConsistencyChecker {
 
     } catch (error) {
       console.error('LLM 校验失败:', error);
-      // 返回基于规则的结果
       return {
-        status: ruleViolations.length > 0 ? 'fail' : 'pass',
-        overall_score: ruleViolations.length > 0 ? 70 : 85,
+        status: 'pass',
+        overall_score: 80,
         errors: [],
         warnings: [],
-        analysis: 'LLM 校验失败，仅基于规则引擎结果'
+        analysis: 'LLM 校验失败，无法提供详细建议'
       };
     }
   }
 
   /**
-   * 构建校验提示词（使用智能上下文）
+   * 构建校验提示词（简化版）
    */
-  buildCheckPrompt(text, intent, context, ruleViolations) {
+  buildCheckPrompt(text, intent, context, memoryData) {
     let prompt = '';
 
-    // 设定文件（优先显示，特别是前面几章）
-    if (context.text_context && context.text_context.settings && context.text_context.settings.length > 0) {
-      prompt += `# 基础设定（重要：请严格遵守这些设定）\n`;
-      for (const setting of context.text_context.settings) {
-        prompt += `\n## ${setting.file}\n`;
-        const maxLength = 2000;
-        const content = setting.content.length > maxLength 
-          ? setting.content.substring(0, maxLength) + '...' 
-          : setting.content;
-        prompt += `${content}\n`;
-      }
-      prompt += '\n';
-    }
-
+    // 待校验的文本
     prompt += `# 待校验的文本\n${text}\n\n`;
 
-    // 如果上下文包含智能加载的文本上下文，优先使用
-    if (context.contextPrompt) {
-      prompt += context.contextPrompt;
-      prompt += '\n';
-    } else if (context.text_context) {
-      // 使用智能上下文加载器构建的上下文
-      if (context.text_context.current) {
-        prompt += `# 当前${context.text_context.current.chapter ? `第${context.text_context.current.chapter}章` : '文件'}\n`;
-        prompt += `文件: ${context.text_context.current.file}\n`;
-        prompt += `内容长度: ${context.text_context.current.length} 字\n\n`;
-      }
-      
-      if (context.text_context.before && context.text_context.before.length > 0) {
-        prompt += `# 前文（共 ${context.text_context.before.length} 章）\n`;
-        for (const chapter of context.text_context.before.slice(0, 3)) {
-          prompt += `\n## 第${chapter.chapter}章（${chapter.length} 字）\n`;
-          prompt += `${chapter.preview}\n`;
+    // 从记忆系统获取的世界观规则
+    if (memoryData.worldRules && Object.keys(memoryData.worldRules).length > 0) {
+      prompt += `# 世界观规则（必须严格遵守）\n`;
+      prompt += `${JSON.stringify(memoryData.worldRules, null, 2)}\n\n`;
+    }
+
+    // 从记忆系统获取的角色信息
+    if (memoryData.characters && memoryData.characters.length > 0) {
+      prompt += `# 角色设定（必须严格遵守）\n`;
+      for (const char of memoryData.characters.slice(0, 5)) {
+        prompt += `【${char.name}】\n`;
+        if (char.personality) {
+          if (char.personality.traits && char.personality.traits.length > 0) {
+            prompt += `性格特质：${char.personality.traits.join('、')}\n`;
+          }
+          if (char.personality.forbidden_traits && char.personality.forbidden_traits.length > 0) {
+            prompt += `禁止特质：${char.personality.forbidden_traits.join('、')}\n`;
+          }
+        }
+        if (char.current_state) {
+          if (char.current_state.level) {
+            prompt += `当前境界/等级：${char.current_state.level}\n`;
+          }
+          if (char.current_state.location) {
+            prompt += `当前位置：${char.current_state.location}\n`;
+          }
         }
         prompt += '\n';
       }
-      
-      if (context.text_context.after && context.text_context.after.length > 0) {
-        prompt += `# 后文（共 ${context.text_context.after.length} 章）\n`;
-        for (const chapter of context.text_context.after.slice(0, 2)) {
-          prompt += `\n## 第${chapter.chapter}章（${chapter.length} 字）\n`;
-          prompt += `${chapter.preview}\n`;
-        }
-        prompt += '\n';
-      }
-      
-      if (context.text_context.related && context.text_context.related.length > 0) {
-        prompt += `# 相关章节（共 ${context.text_context.related.length} 章）\n`;
-        for (const chapter of context.text_context.related.slice(0, 2)) {
-          prompt += `\n## 第${chapter.chapter}章（匹配度: ${chapter.matchScore}）\n`;
-          prompt += `${chapter.preview}\n`;
-        }
-        prompt += '\n';
-      }
+    }
+
+    // 从记忆系统获取的剧情状态
+    if (memoryData.plotState && Object.keys(memoryData.plotState).length > 0) {
+      prompt += `# 当前剧情状态\n`;
+      prompt += `${JSON.stringify(memoryData.plotState, null, 2)}\n\n`;
     }
 
     // 添加写作意图
     if (intent) {
       prompt += `# 写作意图\n`;
-      prompt += `目标：${intent.goal}\n`;
+      prompt += `目标：${intent.goal || '无'}\n`;
       if (intent.constraints) {
-        prompt += `禁止项：${intent.constraints.forbidden?.join(', ')}\n`;
-        prompt += `必需项：${intent.constraints.required?.join(', ')}\n`;
+        if (intent.constraints.forbidden && intent.constraints.forbidden.length > 0) {
+          prompt += `禁止项：${intent.constraints.forbidden.join('、')}\n`;
+        }
+        if (intent.constraints.required && intent.constraints.required.length > 0) {
+          prompt += `必需项：${intent.constraints.required.join('、')}\n`;
+        }
       }
       prompt += '\n';
     }
 
-    // 添加世界观规则
-    if (context.world_rules) {
-      prompt += `# 世界观规则\n`;
-      prompt += `${JSON.stringify(context.world_rules, null, 2)}\n\n`;
-    }
-
-    // 添加人物设定
-    if (context.characters && context.characters.length > 0) {
-      prompt += `# 人物设定\n`;
-      for (const char of context.characters.slice(0, 3)) {
-        prompt += `【${char.name}】\n`;
-        if (char.personality) {
-          prompt += `性格：${char.personality.traits?.join('、')}\n`;
-          prompt += `禁忌特质：${char.personality.forbidden_traits?.join('、')}\n`;
-        }
-        if (char.current_state) {
-          prompt += `当前境界：${char.current_state.level}\n`;
-        }
-        prompt += '\n';
-      }
-    }
-
-    // 添加规则引擎发现的问题
-    if (ruleViolations.length > 0) {
-      prompt += `# 规则引擎已发现的问题\n`;
-      for (const v of ruleViolations) {
-        prompt += `- ${v.message}\n`;
-      }
-      prompt += '\n';
-    }
-
-    prompt += `# 任务\n请仔细分析文本，结合前后文和相关章节，检查是否存在其他问题。返回纯 JSON 格式的校验结果。`;
+    prompt += `# 任务\n请仔细分析文本，检查是否存在以下问题：\n`;
+    prompt += `1. 违反世界观规则\n`;
+    prompt += `2. 角色性格或行为不一致\n`;
+    prompt += `3. 角色境界/能力超出限制\n`;
+    prompt += `4. 逻辑矛盾或不合理之处\n`;
+    prompt += `5. 视角混乱\n\n`;
+    prompt += `对于每个问题，请提供：\n`;
+    prompt += `- 问题类型\n`;
+    prompt += `- 严重程度（critical/high/medium/low）\n`;
+    prompt += `- 具体位置描述\n`;
+    prompt += `- 问题描述\n`;
+    prompt += `- 整改建议（必须具体可操作）\n\n`;
+    prompt += `返回纯 JSON 格式的校验结果。`;
 
     return prompt;
   }

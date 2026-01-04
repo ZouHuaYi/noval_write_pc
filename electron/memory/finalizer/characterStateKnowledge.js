@@ -175,6 +175,64 @@ class CharacterStateKnowledge {
 
     return stats;
   }
+
+  /**
+   * 恢复角色状态（回滚时使用）
+   */
+  restoreState(characterName, field, value, chapter) {
+    const states = this.loadStates();
+    
+    // 删除该章节之后的状态变化
+    const filtered = states.filter(s => {
+      if (s.character_name !== characterName) return true;
+      if (s.chapter < chapter) return true;
+      if (s.chapter === chapter && s.state_change?.[field] === value) return false;
+      return s.chapter > chapter;
+    });
+
+    // 如果指定了值，添加恢复记录
+    if (value !== null && value !== undefined) {
+      filtered.push({
+        state_id: `state_restore_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        character_name: characterName,
+        type: 'restored',
+        state_change: { [field]: value },
+        chapter: chapter,
+        recorded_at: new Date().toISOString()
+      });
+    }
+
+    this.saveStates(filtered);
+    console.log(`   ✅ 恢复角色状态: ${characterName}.${field} = ${value}`);
+  }
+
+  /**
+   * 获取角色的当前状态（合并所有状态变化）
+   */
+  getCharacterCurrentStateMerged(characterName) {
+    const states = this.getCharacterStates(characterName);
+    if (states.length === 0) {
+      return null;
+    }
+
+    // 合并所有状态变化
+    const merged = {};
+    for (const state of states) {
+      if (state.state_change) {
+        Object.assign(merged, state.state_change);
+      }
+    }
+
+    return {
+      character_name: characterName,
+      current: merged,
+      timeline: states.map(s => ({
+        chapter: s.chapter,
+        changes: s.state_change,
+        type: s.type
+      }))
+    };
+  }
 }
 
 module.exports = CharacterStateKnowledge;

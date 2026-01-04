@@ -9,6 +9,7 @@ const { callLLM } = require('../../core/llm');
 const { safeParseJSON } = require('../../utils/jsonParser');
 const ExtractWriter = require('./extractWriter');
 const FileStateManager = require('../managers/fileStateManager');
+const ExtractValidator = require('./extractValidator');
 
 class IntelligentExtractor {
   constructor(workspaceRoot, memoryManager, llmConfig, vectorIndex = null) {
@@ -518,71 +519,117 @@ ${content}
   }
 
   /**
-   * 使用 LLM 从章节内容中提取信息（重构版：输出 ChapterExtract）
+   * 使用 LLM 从章节内容中提取信息（Extract Prompt 2.0：证据化数据）
    */
   async extractFromChapter(content, chapterNumber, filename) {
     // 限制内容长度
     const limitedContent = content.substring(0, 3000);
 
-    const systemPrompt = `你是小说分析 Agent，而不是记忆系统。
+    // Extract Prompt 2.0 - SYSTEM PROMPT（修正版）
+    const systemPrompt = `你是一个【小说文本信息提取器】，不是作者，也不是世界观裁决者。
 
-# 核心规则
-1. **禁止直接写入任何长期记忆**
-2. **只能输出 ChapterExtract JSON**
-3. **不得重复总结已有事实**，只在发现"可能新增信息"时输出
-4. **所有概念请用自然语言**，不要尝试生成 ID
+你的职责：
+1. 只提取【文本中明确或暗示的主张】
+2. 为每一条主张提供【原文证据】
+3. 对每一条主张给出【不确定性评估（0~1）】
+4. 不允许推理补全未在文本中出现的信息
+5. 不允许将"感觉、可能、暗示"当作已成立事实
+6. 不允许解释剧情意图或推测作者想法
 
-# 任务
-从提供的章节内容中提取以下信息：
-1. 事实候选（世界规则、生物学事实、不可逆事件）
-2. 概念提及（新概念或已有概念的不同表述）
-3. 伏笔候选（未来承诺）
-4. 故事状态快照
+你不决定哪些信息会进入长期记忆。
+你只输出结构化的"候选信息"。
 
-# 输出格式（ChapterExtract）
+⚠️ 重要规则：
+- 所有条目必须包含 evidence（原文引用）
+- 必须给出 certainty（0~1）
+- certainty < 0.7 的内容不得进入 fact_claims
+- 如果你不确定是否成立，请放入 inference_only
+
+❌ 禁止事项：
+- 禁止将"尝试"、"失败"、"可能"等事件性描述放入 fact_claims
+- 禁止将伪长期状态（如"突破失败状态"）放入 state_claims
+- 禁止在 foreshadow 中解释剧情意图
+- 禁止输出 story_state_snapshot（这不是 Extract 的职责）`;
+
+    // Extract Prompt 2.0 - USER PROMPT
+    const userPrompt = `以下是小说第 ${chapterNumber} 章的内容：
+
+<<<TEXT
+${limitedContent}
+TEXT>>>
+
+请从中提取【候选主张】，并严格按 JSON 格式输出。
+
+提取类型包括：
+- fact_claims（事实主张）：世界在这一章之后仍然成立的事实，certainty >= 0.7
+  ❌ 禁止：尝试、失败、可能等事件性描述
+- event_claims（事件主张）：一次性事件（如突破尝试、战斗、对话）
+- state_claims（状态变化主张）：角色的长期状态变化（如境界、位置）
+  ❌ 禁止：伪长期状态（如"突破失败状态"）
+- foreshadow_candidates（伏笔候选）：文本中暗示未来的内容
+  ❌ 禁止：解释剧情意图或推测作者想法
+- inference_only（仅推断）：不足以成为事实的推断，certainty < 0.7
+
+⚠️ 规则：
+- 所有条目必须包含 evidence（原文引用）
+- 必须给出 certainty（0~1）
+- certainty < 0.7 的内容不得进入 fact_claims
+- 如果你不确定是否成立，请放入 inference_only
+- 事件性内容必须放入 event_claims，不能放入 fact_claims
+
+输出 JSON 格式：
 <json>
 {
   "chapter": ${chapterNumber},
-  "fact_candidates": [
+  "fact_claims": [
     {
-      "statement": "事实陈述（客观、不可逆）",
-      "type": "world_rule" | "biology" | "irreversible_event" | "location",
-      "confidence": "observed" | "canonical",
-      "evidence": "证据来源",
-      "source_refs": ["章节引用"],
-      "concept_refs": ["相关概念表面文本"]
+      "subject": "张三",
+      "predicate": "level",
+      "value": "筑基期",
+      "type": "character_level",
+      "evidence": "他体内灵力骤然凝实，正式踏入筑基之境",
+      "certainty": 0.95
     }
   ],
-  "concept_mentions": [
+  "event_claims": [
     {
-      "surface": "概念表面文本（如'地磁异常'）",
-      "context": "出现上下文",
-      "chapter": ${chapterNumber},
-      "description": "概念描述（可选）"
+      "type": "breakthrough_attempt",
+      "subject": "张三",
+      "result": "failed",
+      "evidence": "这一次突破，仍旧失败了",
+      "certainty": 0.95
+    }
+  ],
+  "state_claims": [
+    {
+      "character": "张三",
+      "field": "location",
+      "value": "青云山",
+      "evidence": "他回到了青云山",
+      "certainty": 0.9
     }
   ],
   "foreshadow_candidates": [
     {
-      "surface": "伏笔相关概念表面文本",
-      "implied_future": "暗示的未来",
-      "chapter": ${chapterNumber}
+      "surface": "多次冲击瓶颈失败",
+      "evidence": "数次冲击瓶颈，却始终无法形成稳定循环",
+      "certainty": 0.8
     }
   ],
-  "story_state_snapshot": {
-    "current_location": "当前地点",
-    "global_tension": "low" | "medium" | "high" | "critical",
-    "known_threats": ["威胁概念表面文本"],
-    "open_mysteries": ["未解之谜概念表面文本"]
-  },
-  "raw_notes": "如果只是确认已有事实，在这里说明"
-}
-</json>`;
+      "inference_only": [
+        {
+          "claim": "张三可能即将突破筑基",
+          "basis": "灵力出现质变描写",
+          "certainty": 0.6
+        }
+      ]
+    }
+    </json>
 
-    const userPrompt = `这是第${chapterNumber}章的内容：
-
-${limitedContent}
-
-请提取其中的事实、概念、伏笔和故事状态。`;
+⚠️ 重要：
+- 不要输出 concept_mentions（这不是 Extract 的职责）
+- certainty 最高 0.95（不能给 1）
+- 文本明示的内容不要放入 inference_only，应该用 event_claims 的 narrative_claim 类型`;
 
     try {
       const responseText = await callLLM(
@@ -607,29 +654,258 @@ ${limitedContent}
       // 确保章节号存在
       extracted.chapter = chapterNumber;
 
-      // 验证和填充默认值
-      if (!extracted.fact_candidates) extracted.fact_candidates = [];
-      if (!extracted.concept_mentions) extracted.concept_mentions = [];
-      if (!extracted.foreshadow_candidates) extracted.foreshadow_candidates = [];
-      if (!extracted.story_state_snapshot) extracted.story_state_snapshot = {};
-      if (!extracted.raw_notes) extracted.raw_notes = '';
+      // 校验提取结果
+      const validator = new ExtractValidator();
+      const validation = validator.validateExtract(extracted);
+      
+      if (!validation.valid) {
+        console.warn(`   ⚠️  Extract 校验失败，尝试自动修复...`);
+        for (const error of validation.errors) {
+          console.warn(`     - ${error.message}`);
+        }
+        // 自动修复（过滤无效 claims）
+        extracted = validator.filterInvalidClaims(extracted);
+      }
+
+      // 清理和验证提取结果（ExtractCleaner 只做三件事：去重、合并、丢弃不完整项）
+      const cleaned = this.cleanExtract(extracted);
 
       // 写入 ChapterExtract（临时账本）
-      await this.extractWriter.writeExtract(chapterNumber, extracted);
+      await this.extractWriter.writeExtract(chapterNumber, cleaned);
       
       console.log(`✅ 已写入 ChapterExtract: chapter_${chapterNumber}.json`);
       
       // 标记为已写入
-      extracted.extract_written = true;
+      cleaned.extract_written = true;
       
       // 返回提取结果
-      return extracted;
+      return cleaned;
 
     } catch (error) {
       console.error(`❌ LLM 解析章节失败: ${filename}`, error.message);
       // 抛出错误，让调用者知道失败原因
       throw new Error(`章节提取失败: ${error.message}`);
     }
+  }
+
+  /**
+   * 清理提取结果（ExtractCleaner 只做三件事：去重、合并、丢弃不完整项）
+   * 绝不做判断
+   */
+  cleanExtract(extracted) {
+    const cleaned = {
+      chapter: extracted.chapter || 0,
+      fact_claims: [],
+      event_claims: [],
+      state_claims: [],
+      foreshadow_candidates: [],
+      inference_only: []
+      // ❌ 不包含 concept_mentions（这不是 Extract 的职责）
+    };
+
+    // 1. 处理 fact_claims（去重、丢弃不完整项）
+    if (extracted.fact_claims && Array.isArray(extracted.fact_claims)) {
+      const seen = new Set();
+      for (const claim of extracted.fact_claims) {
+        // 丢弃不完整项（缺 evidence 或 certainty）
+        if (!claim.evidence || typeof claim.certainty !== 'number') {
+          console.log(`   ⚠️  丢弃不完整的事实主张: 缺少 evidence 或 certainty`);
+          continue;
+        }
+
+        // 去重（基于 subject + predicate + value）
+        const key = `${claim.subject || ''}_${claim.predicate || ''}_${claim.value || ''}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+
+        // 确保 certainty >= 0.7（否则应该进入 inference_only）
+        if (claim.certainty < 0.7) {
+          console.log(`   ⚠️  事实主张 certainty < 0.7，移至 inference_only`);
+          cleaned.inference_only.push({
+            claim: `${claim.subject} ${claim.predicate} ${claim.value}`,
+            basis: claim.evidence,
+            certainty: claim.certainty
+          });
+          continue;
+        }
+
+        cleaned.fact_claims.push(claim);
+      }
+    }
+
+    // 2. 处理 state_claims（去重、丢弃不完整项）
+    if (extracted.state_claims && Array.isArray(extracted.state_claims)) {
+      const seen = new Set();
+      for (const claim of extracted.state_claims) {
+        // 丢弃不完整项
+        if (!claim.evidence || typeof claim.certainty !== 'number' || !claim.character || !claim.field) {
+          console.log(`   ⚠️  丢弃不完整的状态主张`);
+          continue;
+        }
+
+        // 去重（基于 character + field）
+        const key = `${claim.character}_${claim.field}`;
+        if (seen.has(key)) {
+          // 合并同证据（保留 certainty 更高的）
+          const existing = cleaned.state_claims.find(c => c.character === claim.character && c.field === claim.field);
+          if (existing && claim.certainty > existing.certainty) {
+            Object.assign(existing, claim);
+          }
+          continue;
+        }
+        seen.add(key);
+
+        cleaned.state_claims.push(claim);
+      }
+    }
+
+    // 3. 处理 foreshadow_candidates（去重、丢弃不完整项）
+    if (extracted.foreshadow_candidates && Array.isArray(extracted.foreshadow_candidates)) {
+      const seen = new Set();
+      for (const candidate of extracted.foreshadow_candidates) {
+        // 丢弃不完整项
+        if (!candidate.evidence || typeof candidate.certainty !== 'number') {
+          console.log(`   ⚠️  丢弃不完整的伏笔候选`);
+          continue;
+        }
+
+        // 去重（基于 title 或 hint）
+        const key = candidate.title || candidate.hint || '';
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+
+        cleaned.foreshadow_candidates.push(candidate);
+      }
+    }
+
+    // 4. 处理 inference_only（去重、丢弃不完整项）
+    if (extracted.inference_only && Array.isArray(extracted.inference_only)) {
+      const seen = new Set();
+      for (const inference of extracted.inference_only) {
+        // 丢弃不完整项
+        if (!inference.claim || typeof inference.certainty !== 'number') {
+          console.log(`   ⚠️  丢弃不完整的推断`);
+          continue;
+        }
+
+        // 去重（基于 claim）
+        if (seen.has(inference.claim)) {
+          continue;
+        }
+        seen.add(inference.claim);
+
+        cleaned.inference_only.push(inference);
+      }
+    }
+
+    // 5. 处理 event_claims（去重、丢弃不完整项）
+    if (extracted.event_claims && Array.isArray(extracted.event_claims)) {
+      const seen = new Set();
+      for (const claim of extracted.event_claims) {
+        // 丢弃不完整项
+        if (!claim.evidence || typeof claim.certainty !== 'number' || !claim.type || !claim.subject) {
+          console.log(`   ⚠️  丢弃不完整的事件主张`);
+          continue;
+        }
+
+        // 去重（基于 type + subject + result）
+        const key = `${claim.type}_${claim.subject}_${claim.result || ''}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+
+        cleaned.event_claims.push(claim);
+      }
+    }
+
+    // ❌ concept_mentions 不属于 Extract 输出
+    // 如果存在，记录警告但不处理
+    if (extracted.concept_mentions && extracted.concept_mentions.length > 0) {
+      console.log(`   ⚠️  检测到 concept_mentions，已忽略（这不是 Extract 的职责）`);
+    }
+
+    // 转换格式以兼容旧的 ChapterFinalizer（向后兼容）
+    // 将 fact_claims 转换为 fact_candidates
+    cleaned.fact_candidates = cleaned.fact_claims.map(claim => ({
+      statement: `${claim.subject} ${claim.predicate} ${claim.value}`,
+      type: claim.type || 'character_level',
+      subject: claim.subject,
+      predicate: claim.predicate,
+      value: claim.value,
+      confidence: claim.certainty >= 0.9 ? 'canonical' : 'observed',
+      evidence: claim.evidence,
+      certainty: claim.certainty
+    }));
+
+    // 将 state_claims 转换为 character_states
+    cleaned.character_states = cleaned.state_claims.map(claim => ({
+      character_name: claim.character,
+      state_change: { [claim.field]: claim.value },
+      chapter: cleaned.chapter,
+      type: claim.field === 'level' ? 'level_breakthrough' : 'irreversible_change'
+    }));
+
+    // 转换 foreshadow_candidates 格式
+    cleaned.foreshadow_candidates = cleaned.foreshadow_candidates.map(candidate => ({
+      surface: candidate.surface || candidate.title || candidate.hint || '',
+      implied_future: candidate.hint || '',
+      chapter: cleaned.chapter
+    }));
+
+    // 处理 narrative_claim events（文本明示但受世界约束）
+    // 这些应该从 inference_only 中提取出来
+    const validator = new ExtractValidator();
+    const narrativeClaims = cleaned.inference_only.filter(inf => {
+      // 如果 basis 是明确的文本引用，且 claim 是状态相关，转为 narrative_claim
+      return inf.basis && inf.basis.length > 20 && 
+             (inf.claim.includes('展现') || inf.claim.includes('描写为') || 
+              inf.claim.includes('被描写') || inf.claim.includes('声称'));
+    });
+
+    for (const narrative of narrativeClaims) {
+      // 从 inference_only 中移除
+      cleaned.inference_only = cleaned.inference_only.filter(inf => inf !== narrative);
+      
+      // 添加到 event_claims
+      cleaned.event_claims.push({
+        type: 'narrative_claim',
+        subject: this.extractSubjectFromClaim(narrative.claim),
+        content: narrative.claim,
+        evidence: narrative.basis,
+        certainty: narrative.certainty || 0.8
+      });
+    }
+
+    // 再次过滤 inference_only，移除状态归因推断
+    cleaned.inference_only = cleaned.inference_only.filter(inf => {
+      if (validator.isStateIdentityInference(inf.claim)) {
+        console.log(`   ⚠️  移除状态归因推断: ${inf.claim}`);
+        return false;
+      }
+      return true;
+    });
+
+    console.log(`   🧹 清理完成: ${cleaned.fact_claims.length} 个事实主张, ${cleaned.event_claims.length} 个事件主张, ${cleaned.state_claims.length} 个状态主张, ${cleaned.foreshadow_candidates.length} 个伏笔候选, ${cleaned.inference_only.length} 个推断`);
+
+    return cleaned;
+  }
+
+  /**
+   * 从 claim 中提取 subject
+   */
+  extractSubjectFromClaim(claim) {
+    if (!claim || typeof claim !== 'string') {
+      return 'unknown';
+    }
+
+    // 简单提取：假设第一个词是 subject
+    const words = claim.split(/\s+/);
+    return words[0] || 'unknown';
   }
 
 }

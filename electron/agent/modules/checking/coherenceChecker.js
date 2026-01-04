@@ -100,7 +100,7 @@ class CoherenceChecker {
   }
 
   /**
-   * 检查连贯性（续写场景）
+   * 检查连贯性（简化版）
    * @param {Object} newChapter - 新章节（文本或分析结果）
    * @param {Array} previousAnalyses - 前章分析结果
    * @param {Object} chapterPlan - 章节规划
@@ -115,79 +115,38 @@ class CoherenceChecker {
         return {
           success: true,
           overall_coherence: 'good',
-          plot_coherence: { status: 'pass', score: 100, issues: [] },
-          emotion_coherence: { status: 'pass', score: 100, issues: [] },
-          pacing_coherence: { status: 'pass', score: 100, issues: [] },
-          chapter_connection: { status: 'pass', score: 100, issues: [] }
+          overall_score: 100,
+          issues: [],
+          suggestions: []
         };
       }
 
+      // 1. 从记忆系统获取数据
+      const memoryData = await this.getMemoryData();
+
+      // 2. 提取前章信息
       const lastChapter = previousAnalyses[previousAnalyses.length - 1];
       const previousState = this.extractPreviousState(lastChapter);
 
-      // 1. 检查情节连贯性
-      const plotCoherence = await this.checkPlotCoherence(newChapter, previousState, llmCaller);
-
-      // 2. 检查情绪连贯性
-      const emotionCoherence = this.checkEmotionCoherence(newChapter, previousState, chapterPlan);
-
-      // 3. 检查节奏连贯性
-      const pacingCoherence = this.checkPacingCoherence(newChapter, previousState, chapterPlan);
-
-      // 4. 检查章节连接
-      const chapterConnection = this.checkChapterConnection(newChapter, previousState, chapterPlan);
-
-      // 5. 检查状态连续性（新增）
-      const stateContinuity = await this.checkStateContinuity(
-        newChapter,
-        previousAnalyses,
+      // 3. 使用 LLM 进行统一检查
+      const newChapterText = typeof newChapter === 'string' ? newChapter : (newChapter.content || '');
+      const checkResult = await this.checkCoherenceWithLLM(
+        newChapterText,
+        previousState,
+        memoryData,
         llmCaller
       );
 
-      // 6. 检查状态规则（新增）
-      const stateRuleCheck = await this.checkStateRules(
-        newChapter,
-        previousAnalyses,
-        llmCaller
-      );
-
-      // 合并状态规则问题到情节连贯性
-      if (stateRuleCheck.issues.length > 0) {
-        plotCoherence.issues.push(...stateRuleCheck.issues);
-        plotCoherence.score -= stateRuleCheck.issues.length * 10;
-        plotCoherence.score = Math.max(0, plotCoherence.score);
-      }
-
-      // 合并状态连续性问题到情节连贯性
-      if (stateContinuity.issues.length > 0) {
-        plotCoherence.issues.push(...stateContinuity.issues);
-        plotCoherence.score -= stateContinuity.issues.length * 8;
-        plotCoherence.score = Math.max(0, plotCoherence.score);
-      }
-
-      // 重新计算情节连贯性状态
-      plotCoherence.status = plotCoherence.score >= 70 ? 'pass' : 'fail';
-
-      // 计算总体连贯性（包含状态检查）
-      const overallScore = (
-        plotCoherence.score +
-        emotionCoherence.score +
-        pacingCoherence.score +
-        chapterConnection.score
-      ) / 4;
-
+      // 4. 计算总体评分
+      const overallScore = checkResult.overall_score || 80;
       const overallCoherence = overallScore >= 80 ? 'good' : overallScore >= 60 ? 'fair' : 'poor';
 
       const result = {
         success: true,
         overall_coherence: overallCoherence,
         overall_score: overallScore,
-        plot_coherence: plotCoherence,
-        emotion_coherence: emotionCoherence,
-        pacing_coherence: pacingCoherence,
-        chapter_connection: chapterConnection,
-        state_continuity: stateContinuity, // 新增
-        state_rule_check: stateRuleCheck // 新增
+        issues: checkResult.issues || [],
+        suggestions: checkResult.suggestions || []
       };
 
       console.log(`✅ 连贯性检查完成：总体=${overallCoherence} (${overallScore.toFixed(1)})`);
@@ -199,13 +158,136 @@ class CoherenceChecker {
       return {
         success: false,
         error: error.message,
-        overall_coherence: 'unknown'
+        overall_coherence: 'unknown',
+        overall_score: 60,
+        issues: [],
+        suggestions: []
       };
     }
   }
 
   /**
-   * 提取前章状态
+   * 从记忆系统获取数据
+   */
+  async getMemoryData() {
+    const data = {
+      characters: [],
+      plotState: {}
+    };
+
+    if (!this.memoryManager) {
+      return data;
+    }
+
+    try {
+      // 获取角色信息
+      if (this.memoryManager.character) {
+        const allChars = this.memoryManager.character.getAllCharacters() || [];
+        data.characters = allChars.map(char => ({
+          name: char.name,
+          role: char.role,
+          personality: char.personality,
+          current_state: char.current_state
+        }));
+      }
+
+      // 获取剧情状态
+      if (this.memoryManager.plot) {
+        data.plotState = this.memoryManager.plot.getCurrentState() || {};
+      }
+    } catch (error) {
+      console.warn('获取记忆系统数据失败:', error.message);
+    }
+
+    return data;
+  }
+
+  /**
+   * 使用 LLM 检查连贯性
+   */
+  async checkCoherenceWithLLM(newChapterText, previousState, memoryData, llmCaller) {
+    try {
+      if (!llmCaller) {
+        throw new Error('LLM 调用器未设置');
+      }
+
+      const userPrompt = this.buildCoherenceCheckPrompt(newChapterText, previousState, memoryData);
+
+      const result = await llmCaller({
+        systemPrompt: this.systemPrompt,
+        userPrompt,
+        temperature: 0.2,
+        maxTokens: 2000
+      });
+
+      if (!result.success || !result.response) {
+        throw new Error('LLM 调用失败');
+      }
+
+      return this.parseCoherenceResult(result.response);
+
+    } catch (error) {
+      console.error('LLM 连贯性检查失败:', error);
+      return {
+        overall_score: 80,
+        issues: [],
+        suggestions: []
+      };
+    }
+  }
+
+  /**
+   * 构建连贯性检查提示词
+   */
+  buildCoherenceCheckPrompt(newChapterText, previousState, memoryData) {
+    let prompt = '';
+
+    prompt += `# 前章结尾状态\n`;
+    prompt += `- 结尾事件：${previousState.ending_events?.join('、') || '无'}\n`;
+    prompt += `- 悬念：${previousState.cliffhanger || '无'}\n`;
+    prompt += `- 结尾情绪：${previousState.ending_emotion?.toFixed(2) || '0.5'}\n`;
+    prompt += `- 结尾节奏：${previousState.ending_pacing || 'medium'}\n`;
+    prompt += `- 角色：${previousState.ending_characters?.join('、') || '无'}\n`;
+    prompt += `- 地点：${previousState.ending_location || '无'}\n\n`;
+
+    prompt += `# 新章开头文本\n`;
+    prompt += `${newChapterText.substring(0, 2000)}${newChapterText.length > 2000 ? '\n\n[文本已截断]' : ''}\n\n`;
+
+    // 从记忆系统获取的角色信息
+    if (memoryData.characters && memoryData.characters.length > 0) {
+      prompt += `# 角色状态（从记忆系统）\n`;
+      for (const char of memoryData.characters.slice(0, 5)) {
+        prompt += `【${char.name}】\n`;
+        if (char.current_state) {
+          if (char.current_state.level) {
+            prompt += `境界/等级：${char.current_state.level}\n`;
+          }
+          if (char.current_state.location) {
+            prompt += `位置：${char.current_state.location}\n`;
+          }
+        }
+        prompt += '\n';
+      }
+    }
+
+    prompt += `# 任务\n请检查新章开头是否与前章结尾自然衔接，重点关注：\n`;
+    prompt += `1. 情节是否连贯（是否有情节间隙或矛盾）\n`;
+    prompt += `2. 情绪转换是否平滑\n`;
+    prompt += `3. 节奏转换是否合理\n`;
+    prompt += `4. 是否回应了前章的悬念\n`;
+    prompt += `5. 角色状态是否连续\n\n`;
+    prompt += `对于每个问题，请提供：\n`;
+    prompt += `- 问题类型\n`;
+    prompt += `- 严重程度（high/medium/low）\n`;
+    prompt += `- 问题描述\n`;
+    prompt += `- 整改建议（必须具体可操作）\n\n`;
+    prompt += `返回纯 JSON 格式。`;
+
+    return prompt;
+  }
+
+  /**
+   * 提取前章状态（简化版）
    */
   extractPreviousState(lastChapter) {
     const ending = lastChapter.coherence_points?.ending || {};
@@ -215,16 +297,14 @@ class CoherenceChecker {
       ending_events: ending.events || [],
       ending_characters: ending.characters || [],
       ending_location: ending.location || '',
-      cliffhanger: ending.cliffhanger || '',
-      emotion_curve: lastChapter.emotion_curve,
-      pacing_curve: lastChapter.pacing_curve
+      cliffhanger: ending.cliffhanger || ''
     };
   }
 
   /**
-   * 检查情节连贯性
+   * 检查情节连贯性（已废弃，保留用于兼容）
    */
-  async checkPlotCoherence(newChapter, previousState, llmCaller) {
+  async checkPlotCoherence_OLD(newChapter, previousState, llmCaller) {
     const issues = [];
     let score = 100;
 
@@ -545,7 +625,7 @@ ${newChapterText.substring(0, 2000)}${newChapterText.length > 2000 ? '\n\n[文�
   }
 
   /**
-   * 解析连贯性检查结果
+   * 解析连贯性检查结果（简化版）
    */
   parseCoherenceResult(response) {
     const { safeParseJSON } = require('../../../utils/jsonParser');
@@ -559,29 +639,30 @@ ${newChapterText.substring(0, 2000)}${newChapterText.length > 2000 ? '\n\n[文�
       });
 
       // 验证必需字段
-      if (!result.plot_coherence) {
-        result.plot_coherence = { status: 'pass', score: 100, issues: [] };
+      if (!result.overall_score) {
+        result.overall_score = 80;
       }
-      if (!result.emotion_coherence) {
-        result.emotion_coherence = { status: 'pass', score: 100, issues: [] };
+      if (!result.issues) {
+        result.issues = [];
       }
-      if (!result.pacing_coherence) {
-        result.pacing_coherence = { status: 'pass', score: 100, issues: [] };
+      if (!result.suggestions) {
+        result.suggestions = [];
       }
-      if (!result.chapter_connection) {
-        result.chapter_connection = { status: 'pass', score: 100, issues: [] };
+
+      // 从 issues 中提取 suggestions
+      if (result.issues && result.issues.length > 0) {
+        result.suggestions = result.issues
+          .filter(issue => issue.suggestion)
+          .map(issue => issue.suggestion);
       }
 
       return result;
     } catch (e) {
       console.error('解析连贯性检查结果失败:', e.message);
       return {
-        plot_coherence: { status: 'pass', score: 100, issues: [] },
-        emotion_coherence: { status: 'pass', score: 100, issues: [] },
-        pacing_coherence: { status: 'pass', score: 100, issues: [] },
-        chapter_connection: { status: 'pass', score: 100, issues: [] },
-        state_continuity: { valid: true, issues: [] },
-        state_rule_check: { issues: [] }
+        overall_score: 80,
+        issues: [],
+        suggestions: []
       };
     }
   }
